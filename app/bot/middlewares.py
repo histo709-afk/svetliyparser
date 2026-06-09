@@ -19,6 +19,13 @@ class AdminMiddleware(BaseMiddleware):
         data: Dict[str, Any],
     ) -> Any:
         user: User | None = data.get("event_from_user")
+        import logging
+        logging.getLogger(__name__).warning(
+            "ACCESS_CHECK user_id=%s admin_ids=%s allowed=%s",
+            user.id if user else None,
+            settings.ADMIN_IDS,
+            user is not None and user.id in settings.ADMIN_IDS,
+        )
         if user is None or user.id not in settings.ADMIN_IDS:
             # Try to answer if the event is a message or callback
             from aiogram.types import Message, CallbackQuery
