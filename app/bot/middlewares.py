@@ -19,8 +19,9 @@ class AdminMiddleware(BaseMiddleware):
         data: Dict[str, Any],
     ) -> Any:
         user: User | None = data.get("event_from_user")
-        print(f"ACCESS_CHECK user_id={user.id if user else None} admin_ids={settings.ADMIN_IDS} allowed={user is not None and user.id in settings.ADMIN_IDS}", flush=True)
-        if user is None or user.id not in settings.ADMIN_IDS:
+        admin_ids = settings.admin_ids_list
+        print(f"ACCESS_CHECK user_id={user.id if user else None} admin_ids={admin_ids} allowed={user is not None and user.id in admin_ids}", flush=True)
+        if user is None or user.id not in admin_ids:
             # Try to answer if the event is a message or callback
             from aiogram.types import Message, CallbackQuery
 

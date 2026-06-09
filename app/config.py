@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     )
 
     BOT_TOKEN: str
-    ADMIN_IDS: List[int] = []
+    ADMIN_IDS: str = ""
     TELEGRAM_API_ID: int
     TELEGRAM_API_HASH: str
     TELEGRAM_PHONE: str
@@ -23,14 +23,12 @@ class Settings(BaseSettings):
     SESSION_NAME: str = "userbot"
     LOG_LEVEL: str = "INFO"
 
-    @field_validator("ADMIN_IDS", mode="before")
-    @classmethod
-    def parse_admin_ids(cls, v: object) -> List[int]:
-        if isinstance(v, str):
-            return [int(x.strip()) for x in v.split(",") if x.strip()]
-        if isinstance(v, list):
-            return [int(x) for x in v]
-        return []
+    @property
+    def admin_ids_list(self) -> List[int]:
+        import os
+        raw = os.environ.get("ADMIN_IDS", self.ADMIN_IDS)
+        print(f"RAW_ADMIN_IDS={repr(raw)}", flush=True)
+        return [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
 
 
 settings = Settings()
