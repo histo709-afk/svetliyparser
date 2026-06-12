@@ -1,13 +1,16 @@
 """Handler for bulk import from Excel file."""
 from __future__ import annotations
 
+import asyncio
 import io
 from aiogram import F, Router
 from aiogram.types import Message, Document
 
 from app.bot.keyboards import back_to_menu_keyboard
 from app.database import async_session_factory
-from app.services.channel_service import add_source_channel, add_destination_channel, create_route
+from app.services.channel_service import (
+    add_source_channel, add_destination_channel, create_route, resolve_channel
+)
 
 router = Router(name="import")
 
@@ -49,10 +52,28 @@ async def handle_excel_import(message: Message) -> None:
         await message.answer("❌ Файл пустой или содержит только заголовки.")
         return
 
-    # Skip header row
     data_rows = rows[1:]
-
     client = _get_telethon_client()
+
+    # Pre-resolve all unique destination links once to avoid rate limits
+    unique_dest_links = set()
+    for row in data_rows:
+        if row and len(row) >= 3 and row[2]:
+            unique_dest_links.add(str(row[2]).strip())
+
+    dest_cache: dict[str, object] = {}
+    dest_errors: dict[str, str] = {}
+    for link in unique_dest_links:
+        try:
+            info = await resolve_channel(client, link)
+            if info:
+                dest_cache[link] = info
+            else:
+                dest_errors[link] = f"Не удалось найти канал по ссылке: {link}"
+        except Exception as e:
+            dest_errors[link] = str(e)
+        await asyncio.sleep(0.5)  # avoid flood limits
+
     added = 0
     skipped = 0
     errors = []
@@ -66,6 +87,13 @@ async def handle_excel_import(message: Message) -> None:
 
         source_link = str(source_link).strip()
         dest_link = str(dest_link).strip()
+
+        if dest_link in dest_errors:
+            errors.append(f"Строка {i}: {source_link} → {dest_errors[dest_link][:60]}")
+            if len(errors) >= 10:
+                errors.append("...и другие ошибки")
+                break
+            continue
 
         try:
             async with async_session_factory() as session:
