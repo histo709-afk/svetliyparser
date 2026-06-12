@@ -10,13 +10,14 @@ from aiogram.types import CallbackQuery, Message
 from app.bot.keyboards import back_to_menu_keyboard, cancel_keyboard
 from app.database import async_session_factory
 from app.repositories.channel_repo import ChannelRepository
-from app.services.channel_service import add_source_channel, channel_display_name
+from app.services.channel_service import add_source_channel, add_destination_channel, channel_display_name, create_route
 
 router = Router(name="sources")
 
 
 class AddSourceStates(StatesGroup):
     waiting_link = State()
+    waiting_dest_link = State()
 
 
 def _get_telethon_client():
@@ -57,17 +58,21 @@ async def process_source_link(message: Message, state: FSMContext) -> None:
             channel, created = await add_source_channel(session, client, link)
             await session.commit()
 
-        if created:
-            text = (
-                f"✅ Канал-источник добавлен!\n\n"
-                f"<b>{channel_display_name(channel)}</b>\n\n"
-                f"Теперь добавьте канал-назначение командой /adddest"
-            )
-        else:
-            text = (
-                f"ℹ️ Канал уже существует:\n\n"
-                f"<b>{channel_display_name(channel)}</b>"
-            )
+        src_name = channel_display_name(channel)
+        await state.update_data(src_channel_id=channel.id, src_name=src_name)
+        await state.set_state(AddSourceStates.waiting_dest_link)
+
+        prefix = "✅ Канал-источник добавлен!" if created else "ℹ️ Канал уже существует."
+        await message.answer(
+            f"{prefix}\n\n<b>{src_name}</b>\n\n"
+            f"Теперь отправьте ссылку на канал-назначение:\n"
+            f"• <code>@channel</code>\n"
+            f"• <code>https://t.me/channel</code>",
+            reply_markup=cancel_keyboard(),
+            parse_mode="HTML",
+        )
+        return
+
     except ValueError as exc:
         text = f"❌ Ошибка: {exc}"
     except Exception as exc:
@@ -75,6 +80,47 @@ async def process_source_link(message: Message, state: FSMContext) -> None:
 
     await state.clear()
     await message.answer(text, reply_markup=back_to_menu_keyboard(), parse_mode="HTML")
+
+
+@router.message(AddSourceStates.waiting_dest_link)
+async def process_dest_link_for_source(message: Message, state: FSMContext) -> None:
+    link = message.text.strip() if message.text else ""
+    if not link:
+        await message.answer("⚠️ Пожалуйста, отправьте текстовую ссылку.")
+        return
+
+    await message.answer("🔍 Ищу канал...")
+
+    data = await state.get_data()
+    src_channel_id: int = data["src_channel_id"]
+    src_name: str = data["src_name"]
+
+    try:
+        client = _get_telethon_client()
+        async with async_session_factory() as session:
+            dest_channel, _ = await add_destination_channel(session, client, link)
+            await session.commit()
+            dest_id = dest_channel.id
+            dest_name = channel_display_name(dest_channel)
+
+        async with async_session_factory() as session:
+            route, created = await create_route(session, src_channel_id, dest_id)
+            await session.commit()
+
+        await state.clear()
+        if created:
+            text = f"✅ <b>Маршрут создан!</b>\n\n📥 {src_name}\n⬇️\n📤 {dest_name}"
+        else:
+            text = f"ℹ️ Маршрут уже существует:\n\n📥 {src_name}\n⬇️\n📤 {dest_name}"
+
+        await message.answer(text, reply_markup=back_to_menu_keyboard(), parse_mode="HTML")
+
+    except ValueError as exc:
+        await state.clear()
+        await message.answer(f"❌ Ошибка: {exc}", reply_markup=back_to_menu_keyboard())
+    except Exception as exc:
+        await state.clear()
+        await message.answer(f"❌ Неожиданная ошибка: {exc}", reply_markup=back_to_menu_keyboard())
 
 
 @router.message(Command("listsources"))
