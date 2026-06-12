@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import os
 from typing import List
 
-from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -25,10 +25,8 @@ class Settings(BaseSettings):
 
     @property
     def admin_ids_list(self) -> List[int]:
-        import os
         raw = os.environ.get("ADMIN_IDS", self.ADMIN_IDS)
-        print(f"RAW_ADMIN_IDS={repr(raw)}", flush=True)
-        return [int(x.strip()) for x in raw.split(",") if x.strip().isdigit()]
+        return [int(x.strip()) for x in raw.split(",") if x.strip().lstrip("-").isdigit()]
 
 
 settings = Settings()
