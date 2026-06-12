@@ -26,19 +26,31 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 
-def source_selection_keyboard(sources: List[SourceChannel]) -> InlineKeyboardMarkup:
-    """Keyboard for selecting a source channel."""
+def source_selection_keyboard(sources: List[SourceChannel], page: int = 0) -> InlineKeyboardMarkup:
+    """Keyboard for selecting a source channel (paginated, 30 per page)."""
+    PAGE_SIZE = 30
+    total = len(sources)
+    start = page * PAGE_SIZE
+    end = min(start + PAGE_SIZE, total)
+    page_sources = sources[start:end]
+
     builder = InlineKeyboardBuilder()
-    for src in sources:
+    for src in page_sources:
         builder.row(
             InlineKeyboardButton(
-                text=channel_display_name(src),
+                text=channel_display_name(src)[:40],
                 callback_data=f"select_source:{src.id}",
             )
         )
-    builder.row(
-        InlineKeyboardButton(text="❌ Отмена", callback_data="cancel")
-    )
+    # Pagination row
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton(text="◀️", callback_data=f"src_page:{page-1}"))
+    if end < total:
+        nav.append(InlineKeyboardButton(text="▶️", callback_data=f"src_page:{page+1}"))
+    if nav:
+        builder.row(*nav)
+    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data="cancel"))
     return builder.as_markup()
 
 

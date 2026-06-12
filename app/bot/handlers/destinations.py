@@ -104,6 +104,18 @@ async def process_dest_link(message: Message, state: FSMContext) -> None:
         await message.answer(f"❌ Неожиданная ошибка: {exc}", reply_markup=back_to_menu_keyboard())
 
 
+@router.callback_query(AddDestStates.waiting_source_selection, F.data.startswith("src_page:"))
+async def paginate_sources(callback: CallbackQuery, state: FSMContext) -> None:
+    page = int(callback.data.split(":")[1])
+    async with async_session_factory() as session:
+        repo = ChannelRepository(session)
+        sources = await repo.list_active_sources()
+    data = await state.get_data()
+    dest_name = data.get("dest_name", "")
+    await callback.message.edit_reply_markup(reply_markup=source_selection_keyboard(sources, page))
+    await callback.answer()
+
+
 @router.callback_query(AddDestStates.waiting_source_selection, F.data.startswith("select_source:"))
 async def process_source_selection(callback: CallbackQuery, state: FSMContext) -> None:
     source_id = int(callback.data.split(":")[1])
