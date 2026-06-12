@@ -20,9 +20,10 @@ telethon_client = TelegramClient(
 
 async def start_client() -> TelegramClient:
     """Start and authenticate the Telethon client."""
+    print(f"SESSION_STRING_LEN={len(_session_string)} STARTS={_session_string[:10] if _session_string else 'EMPTY'}", flush=True)
     await telethon_client.connect()
-    if _session_string and await telethon_client.is_user_authorized():
+    authorized = await telethon_client.is_user_authorized()
+    print(f"IS_AUTHORIZED={authorized}", flush=True)
+    if authorized:
         return telethon_client
-    # Fallback: interactive auth (only works locally)
-    await telethon_client.start(phone=settings.TELEGRAM_PHONE)
-    return telethon_client
+    raise RuntimeError("Telethon not authorized. Set TELEGRAM_SESSION_STRING env var.")
