@@ -60,21 +60,20 @@ async def resolve_channel(
     if identifier.startswith("+"):
         invite_hash = identifier[1:]
         try:
-            result = await client(CheckChatInviteRequest(invite_hash))
-            if isinstance(result, ChatInviteAlready):
-                entity = result.chat
-            elif isinstance(result, ChatInvite):
-                # Not joined yet — try get_entity via full link
-                try:
-                    entity = await client.get_entity(f"https://t.me/+{invite_hash}")
-                except Exception:
+            # Try get_entity with full URL first (works if already joined)
+            entity = await client.get_entity(f"https://t.me/+{invite_hash}")
+        except Exception:
+            # Fallback: CheckChatInviteRequest
+            try:
+                result = await client(CheckChatInviteRequest(invite_hash))
+                if isinstance(result, ChatInviteAlready):
+                    entity = result.chat
+                else:
                     log.warning("resolve_invite_not_joined", hash=invite_hash)
                     return None
-            else:
+            except Exception as exc:
+                log.warning("resolve_invite_failed", hash=invite_hash, error=str(exc))
                 return None
-        except Exception as exc:
-            log.warning("resolve_invite_failed", hash=invite_hash, error=str(exc))
-            return None
     else:
         try:
             entity = await client.get_entity(identifier)
