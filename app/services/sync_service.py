@@ -16,6 +16,41 @@ from app.services.forwarder import forward_album, forward_message
 
 log = structlog.get_logger(__name__)
 
+
+def _channel_link(chat_id: int, msg_id: int) -> str:
+    """Build t.me/c/... link for a channel message."""
+    cid = abs(chat_id)
+    if str(cid).startswith("100"):
+        cid = int(str(cid)[3:])
+    return f"https://t.me/c/{cid}/{msg_id}"
+
+
+async def _send_notification(
+    client: TelegramClient,
+    source_title: str,
+    source_id: int,
+    source_msg_id: int,
+    dest_title: str,
+    dest_id: int,
+    dest_msg_id: int,
+) -> None:
+    from app.config import settings
+    chat_id = settings.NOTIFICATIONS_CHAT_ID
+    if not chat_id:
+        return
+    src_link = _channel_link(source_id, source_msg_id)
+    dst_link = _channel_link(dest_id, dest_msg_id)
+    text = (
+        f"**{source_title}** → **{dest_title}**\n"
+        f"Пост №{source_msg_id} ([ссылка]({src_link}))\n"
+        f"✅ Переслан: [ссылка]({dst_link})"
+    )
+    try:
+        await client.send_message(chat_id, text, link_preview=False)
+    except Exception as exc:
+        log.warning("notification_failed", error=str(exc))
+
+
 # In-memory buffer for media groups: {(source_channel_id, grouped_id): [Message, ...]}
 _album_buffer: Dict[Tuple[int, str], List[Message]] = {}
 _album_timers: Dict[Tuple[int, str], asyncio.TimerHandle] = {}
@@ -199,6 +234,15 @@ async def _process_single_message(
                     source_message_id=message.id,
                     dest_channel_id=dest.telegram_id,
                     dest_message_id=dest_msg_id,
+                )
+                await _send_notification(
+                    telethon_client,
+                    source.title or str(source_channel_id),
+                    source_channel_id,
+                    message.id,
+                    dest.title or str(dest.telegram_id),
+                    dest.telegram_id,
+                    dest_msg_id,
                 )
 
             await session.commit()

@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     SESSION_NAME: str = "userbot"
     TELEGRAM_SESSION_STRING: str = ""
     LOG_LEVEL: str = "INFO"
+    NOTIFICATIONS_CHAT_ID: int = 0
 
     @property
     def admin_ids_list(self) -> List[int]:
