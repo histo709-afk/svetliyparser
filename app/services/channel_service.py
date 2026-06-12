@@ -58,6 +58,23 @@ async def resolve_channel(
     if not identifier:
         return None
 
+    # Handle numeric IDs
+    if identifier.lstrip("-").isdigit():
+        try:
+            entity = await client.get_entity(int(identifier))
+        except Exception as exc:
+            log.warning("resolve_channel_failed", identifier=identifier, error=str(exc))
+            return None
+        if not isinstance(entity, (Channel, Chat)):
+            return None
+        raw_id = entity.id
+        telegram_id = int(f"-100{raw_id}") if raw_id > 0 else raw_id
+        return ChannelInfo(
+            telegram_id=telegram_id,
+            username=getattr(entity, "username", None),
+            title=getattr(entity, "title", identifier),
+        )
+
     # Handle private invite links (hash starts with +)
     if identifier.startswith("+"):
         invite_hash = identifier[1:]
