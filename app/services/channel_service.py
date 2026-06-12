@@ -5,10 +5,12 @@ import re
 from dataclasses import dataclass
 from typing import Optional
 
+import asyncio
+
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 from telethon import TelegramClient
-from telethon.errors import UsernameInvalidError, UsernameNotOccupiedError
+from telethon.errors import UsernameInvalidError, UsernameNotOccupiedError, FloodWaitError
 from telethon.tl.functions.messages import CheckChatInviteRequest
 from telethon.tl.types import Channel, Chat, ChatInviteAlready, ChatInvite
 
@@ -64,8 +66,19 @@ async def resolve_channel(
             if isinstance(result, ChatInviteAlready):
                 entity = result.chat
             else:
-                # ChatInvite means not yet joined — can't resolve entity
                 log.warning("resolve_invite_not_joined", hash=invite_hash)
+                return None
+        except FloodWaitError as e:
+            log.warning("resolve_invite_flood_wait", hash=invite_hash, seconds=e.seconds)
+            await asyncio.sleep(e.seconds + 1)
+            try:
+                result = await client(CheckChatInviteRequest(invite_hash))
+                if isinstance(result, ChatInviteAlready):
+                    entity = result.chat
+                else:
+                    return None
+            except Exception as exc2:
+                log.warning("resolve_invite_failed_retry", hash=invite_hash, error=str(exc2))
                 return None
         except Exception as exc:
             log.warning("resolve_invite_failed", hash=invite_hash, error=str(exc))
