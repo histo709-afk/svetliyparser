@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     DATABASE_URL: str
     REDIS_URL: str
     SESSION_NAME: str = "userbot"
+    TELEGRAM_SESSION_STRING: str = ""
     LOG_LEVEL: str = "INFO"
 
     @property
