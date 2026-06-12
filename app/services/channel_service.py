@@ -61,6 +61,20 @@ async def resolve_channel(
     # Handle private invite links (hash starts with +)
     if identifier.startswith("+"):
         invite_hash = identifier[1:]
+
+        # Check Redis cache first to avoid repeated CheckChatInviteRequest calls
+        try:
+            import redis.asyncio as aioredis
+            from app.config import settings as _s
+            _r = aioredis.from_url(_s.REDIS_URL, decode_responses=True)
+            cached = await _r.get(f"invite_cache:{invite_hash}")
+            await _r.aclose()
+            if cached:
+                telegram_id = int(cached)
+                return ChannelInfo(telegram_id=telegram_id, username=None, title=invite_hash)
+        except Exception:
+            pass
+
         try:
             result = await client(CheckChatInviteRequest(invite_hash))
             if isinstance(result, ChatInviteAlready):
@@ -99,6 +113,17 @@ async def resolve_channel(
 
     raw_id: int = entity.id
     telegram_id = int(f"-100{raw_id}")
+
+    # Cache invite hash → telegram_id in Redis
+    if identifier.startswith("+"):
+        try:
+            import redis.asyncio as aioredis
+            from app.config import settings as _s
+            _r = aioredis.from_url(_s.REDIS_URL, decode_responses=True)
+            await _r.set(f"invite_cache:{identifier[1:]}", str(telegram_id), ex=604800)
+            await _r.aclose()
+        except Exception:
+            pass
 
     username: Optional[str] = getattr(entity, "username", None)
     title: str = getattr(entity, "title", identifier)
