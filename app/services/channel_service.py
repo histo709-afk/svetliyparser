@@ -68,6 +68,9 @@ async def resolve_channel(
             from app.config import settings as _s
             _r = aioredis.from_url(_s.REDIS_URL, decode_responses=True)
             cached = await _r.get(f"invite_cache:{invite_hash}")
+            if not cached:
+                # Also check dialog_id cache from /sync_dialogs command
+                cached = await _r.get(f"invite_hash_to_id:{invite_hash}")
             await _r.aclose()
             if cached:
                 telegram_id = int(cached)
