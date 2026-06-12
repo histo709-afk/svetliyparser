@@ -5,3 +5,4 @@ dockerfilePath = "Dockerfile"
 [deploy]
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
+# force rebuild Fri Jun 12 20:04:28 UTC 2026
