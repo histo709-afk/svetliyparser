@@ -8,7 +8,7 @@ from telethon.sessions import StringSession
 
 from app.config import settings
 
-_session_string = os.environ.get("TELEGRAM_SESSION_STRING", "")
+_session_string = os.environ.get("TELEGRAM_SESSION_STRING", "").strip()
 _session = StringSession(_session_string) if _session_string else StringSession()
 
 telethon_client = TelegramClient(
@@ -20,6 +20,9 @@ telethon_client = TelegramClient(
 
 async def start_client() -> TelegramClient:
     """Start and authenticate the Telethon client."""
-    if not telethon_client.is_connected():
-        await telethon_client.start(phone=settings.TELEGRAM_PHONE)
+    await telethon_client.connect()
+    if _session_string and await telethon_client.is_user_authorized():
+        return telethon_client
+    # Fallback: interactive auth (only works locally)
+    await telethon_client.start(phone=settings.TELEGRAM_PHONE)
     return telethon_client
