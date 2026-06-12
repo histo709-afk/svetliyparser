@@ -9,7 +9,8 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 from telethon import TelegramClient
 from telethon.errors import UsernameInvalidError, UsernameNotOccupiedError
-from telethon.tl.types import Channel, Chat
+from telethon.tl.functions.messages import CheckChatInviteRequest
+from telethon.tl.types import Channel, Chat, ChatInviteAlready, ChatInvite
 
 from app.models.channel import DestinationChannel, SourceChannel
 from app.models.route import Route
@@ -55,23 +56,40 @@ async def resolve_channel(
     if not identifier:
         return None
 
-    try:
-        entity = await client.get_entity(identifier)
-    except (UsernameInvalidError, UsernameNotOccupiedError, ValueError) as exc:
-        log.warning("resolve_channel_failed", identifier=identifier, error=str(exc))
-        return None
-    except Exception as exc:
-        log.error("resolve_channel_error", identifier=identifier, error=str(exc))
-        return None
+    # Handle private invite links (hash starts with +)
+    if identifier.startswith("+"):
+        invite_hash = identifier[1:]
+        try:
+            result = await client(CheckChatInviteRequest(invite_hash))
+            if isinstance(result, ChatInviteAlready):
+                entity = result.chat
+            elif isinstance(result, ChatInvite):
+                # Not joined yet — try get_entity via full link
+                try:
+                    entity = await client.get_entity(f"https://t.me/+{invite_hash}")
+                except Exception:
+                    log.warning("resolve_invite_not_joined", hash=invite_hash)
+                    return None
+            else:
+                return None
+        except Exception as exc:
+            log.warning("resolve_invite_failed", hash=invite_hash, error=str(exc))
+            return None
+    else:
+        try:
+            entity = await client.get_entity(identifier)
+        except (UsernameInvalidError, UsernameNotOccupiedError, ValueError) as exc:
+            log.warning("resolve_channel_failed", identifier=identifier, error=str(exc))
+            return None
+        except Exception as exc:
+            log.error("resolve_channel_error", identifier=identifier, error=str(exc))
+            return None
 
     if not isinstance(entity, (Channel, Chat)):
         log.warning("not_a_channel", identifier=identifier, type=type(entity).__name__)
         return None
 
-    # Telethon uses positive IDs for channels internally; in API they're negative
-    # Store as negative (as in chat_id events)
     raw_id: int = entity.id
-    # Channels in Telethon have positive ID but events use -100... form
     telegram_id = int(f"-100{raw_id}")
 
     username: Optional[str] = getattr(entity, "username", None)
