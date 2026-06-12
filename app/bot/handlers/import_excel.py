@@ -71,7 +71,7 @@ async def handle_excel_import(message: Message) -> None:
             else:
                 dest_errors[link] = f"Не удалось найти канал по ссылке: {link}"
         except Exception as e:
-            dest_errors[link] = str(e)
+            dest_errors[link] = f"[{type(e).__name__}] {str(e)[:80]}"
         await asyncio.sleep(2)  # avoid flood limits
 
     added = 0

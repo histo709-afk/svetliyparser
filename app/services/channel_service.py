@@ -79,10 +79,10 @@ async def resolve_channel(
                     return None
             except Exception as exc2:
                 log.warning("resolve_invite_failed_retry", hash=invite_hash, error=str(exc2))
-                return None
+                raise ValueError(f"[retry][{type(exc2).__name__}] {exc2}") from exc2
         except Exception as exc:
             log.warning("resolve_invite_failed", hash=invite_hash, error=str(exc))
-            return None
+            raise ValueError(f"[{type(exc).__name__}] {exc}") from exc
     else:
         try:
             entity = await client.get_entity(identifier)
