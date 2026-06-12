@@ -40,17 +40,13 @@ async def sync_dialogs(message: Message) -> None:
         await message.answer(f"⚠️ Redis ошибка: {e}")
         return
 
-    # Show list grouped by type
-    lines = [f"✅ Найдено {len(channels)} каналов/групп:\n"]
-    for cid, title in sorted(channels, key=lambda x: x[1]):
+    # Show only "Парсер" channels
+    parser_channels = [(cid, title) for cid, title in channels if "парсер" in title.lower()]
+    lines = [f"✅ Каналы 'Парсер' ({len(parser_channels)} шт):\n"]
+    for cid, title in sorted(parser_channels, key=lambda x: x[1]):
         lines.append(f"• {title}: `{cid}`")
 
-    # Split into chunks of 50
-    chunk = []
-    for line in lines:
-        chunk.append(line)
-        if len(chunk) >= 50:
-            await message.answer("\n".join(chunk), parse_mode="Markdown")
-            chunk = []
-    if chunk:
-        await message.answer("\n".join(chunk), parse_mode="Markdown")
+    if not parser_channels:
+        lines.append("(не найдено — попробуй /sync_dialogs_all для полного списка)")
+
+    await message.answer("\n".join(lines), parse_mode="Markdown")
