@@ -184,6 +184,27 @@ async def do_delete_route(callback: CallbackQuery) -> None:
     await callback.message.edit_text(text, reply_markup=routes_list_keyboard(routes, page), parse_mode="HTML")
 
 
+@router.message(Command("debugsource"))
+async def cmd_debug_source(message: Message) -> None:
+    """Show telegram_id stored in DB for a source by username."""
+    parts = message.text.split(maxsplit=1) if message.text else []
+    if len(parts) < 2:
+        await message.answer("Использование: /debugsource @username или часть названия")
+        return
+    query = parts[1].strip().lstrip("@").lower()
+    async with async_session_factory() as session:
+        repo = ChannelRepository(session)
+        sources = await repo.list_all_sources()
+    matches = [s for s in sources if query in (s.username or "").lower() or query in (s.title or "").lower()]
+    if not matches:
+        await message.answer(f"Источник '{query}' не найден.")
+        return
+    lines = []
+    for s in matches:
+        lines.append(f"<b>{s.title}</b>\n@{s.username}\ntelegram_id: <code>{s.telegram_id}</code>\nactive: {s.is_active}")
+    await message.answer("\n\n".join(lines), parse_mode="HTML")
+
+
 @router.message(Command("status"))
 @router.callback_query(F.data == "status")
 async def show_status(event: Message | CallbackQuery, state: FSMContext) -> None:

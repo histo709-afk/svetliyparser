@@ -56,6 +56,7 @@ async def run_listener(client: TelegramClient) -> None:
         @client.on(events.NewMessage())
         async def on_new_message(event: events.NewMessage.Event) -> None:
             if event.chat_id not in ids_set:
+                log.debug("msg_not_in_sources", chat_id=event.chat_id)
                 return
             log.info("event_received", chat_id=event.chat_id, msg_id=event.message.id)
             try:
