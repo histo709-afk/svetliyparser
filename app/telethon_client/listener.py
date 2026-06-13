@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Dict, Set
+from typing import Optional
 
 import structlog
 from telethon import TelegramClient, events
@@ -13,26 +13,54 @@ from app.services import sync_service
 
 log = structlog.get_logger(__name__)
 
-RELOAD_INTERVAL = 30  # seconds
+RELOAD_INTERVAL = 60  # seconds
 
 
-async def _load_sources() -> Dict[int, str]:
-    """Fetch active sources: {telegram_id: username}."""
+async def _try_fix_channel_id(client: TelegramClient, chat_id: int) -> bool:
+    """
+    When an event arrives from an unknown chat_id, try to resolve it via Telethon
+    and match to a source by username. Updates telegram_id in DB if found.
+    Returns True if the channel was found and fixed.
+    """
+    try:
+        entity = await client.get_entity(chat_id)
+    except Exception:
+        return False
+
+    username = getattr(entity, "username", None)
+    if not username:
+        return False
+
     async with async_session_factory() as session:
         repo = ChannelRepository(session)
-        sources = await repo.list_active_sources()
-        return {s.telegram_id: (s.username or "") for s in sources}
-
+        sources = await repo.list_all_sources()
+        for src in sources:
+            if (src.username or "").lower() == username.lower() and src.telegram_id != chat_id:
+                log.info("auto_fix_telegram_id", username=username, old=src.telegram_id, new=chat_id)
+                src.telegram_id = chat_id
+                await session.commit()
+                return True
+    return False
 
 
 async def run_listener(client: TelegramClient) -> None:
     """Start listening for messages and periodically reload channel list."""
-    registered_ids: Set[int] = set()
+
+    # usernames_set: lowercase usernames of active sources (for fast lookup)
+    known_ids: set[int] = set()
     new_handler = None
     edit_handler = None
 
-    async def register_handlers(ids_set: Set[int]) -> None:
-        nonlocal new_handler, edit_handler, registered_ids
+    async def _reload() -> None:
+        nonlocal known_ids
+        async with async_session_factory() as session:
+            repo = ChannelRepository(session)
+            sources = await repo.list_active_sources()
+            known_ids = {s.telegram_id for s in sources}
+        log.info("sources_loaded", count=len(known_ids))
+
+    async def register_handlers() -> None:
+        nonlocal new_handler, edit_handler
 
         if new_handler is not None:
             client.remove_event_handler(new_handler)
@@ -41,9 +69,16 @@ async def run_listener(client: TelegramClient) -> None:
 
         @client.on(events.NewMessage())
         async def on_new_message(event: events.NewMessage.Event) -> None:
-            if event.chat_id not in ids_set:
-                return
-            log.info("event_received", chat_id=event.chat_id, msg_id=event.message.id)
+            chat_id = event.chat_id
+            if chat_id not in known_ids:
+                # Unknown channel — try to fix stale ID in background
+                fixed = await _try_fix_channel_id(client, chat_id)
+                if fixed:
+                    await _reload()
+                    # Process the message now that ID is fixed
+                else:
+                    return
+            log.info("event_received", chat_id=chat_id, msg_id=event.message.id)
             try:
                 await sync_service.handle_new_message(event, client)
             except Exception as exc:
@@ -51,29 +86,25 @@ async def run_listener(client: TelegramClient) -> None:
 
         @client.on(events.MessageEdited())
         async def on_edited_message(event: events.MessageEdited.Event) -> None:
-            if event.chat_id not in ids_set:
+            if event.chat_id not in known_ids:
                 return
             try:
                 await sync_service.handle_edited_message(event, client)
             except Exception as exc:
                 log.error("on_edited_message_unhandled", error=str(exc))
 
-        raw_handler = None
         new_handler = on_new_message
         edit_handler = on_edited_message
-        registered_ids = ids_set
-        log.info("handlers_registered", count=len(ids_set))
 
-    sources = await _load_sources()
-    await register_handlers(set(sources.keys()))
+    await _reload()
+    await register_handlers()
 
     while True:
         await asyncio.sleep(RELOAD_INTERVAL)
         try:
-            new_sources = await _load_sources()
-            new_ids = set(new_sources.keys())
-            if new_ids != registered_ids:
-                log.info("reloading_channels", old=len(registered_ids), new=len(new_ids))
-                await register_handlers(new_ids)
+            old_count = len(known_ids)
+            await _reload()
+            if len(known_ids) != old_count:
+                log.info("channels_updated", count=len(known_ids))
         except Exception as exc:
             log.error("reload_channels_error", error=str(exc))
