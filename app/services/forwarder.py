@@ -23,21 +23,23 @@ def _telethon_peer_to_chat_id(peer_id) -> int:
 
 
 async def forward_message(
-    _client,  # kept for API compatibility (Telethon client, unused)
+    _client,
     message,
     dest_channel_id: int,
 ) -> Optional[int]:
     """Forward a single message to a destination channel via Bot API."""
+    from_chat_id = _telethon_peer_to_chat_id(message.peer_id)
     bot = _get_bot()
     try:
         result = await bot.forward_message(
             chat_id=dest_channel_id,
-            from_chat_id=_telethon_peer_to_chat_id(message.peer_id),
+            from_chat_id=from_chat_id,
             message_id=message.id,
         )
+        log.info("forward_ok", dest=dest_channel_id, msg_id=message.id, result_id=result.message_id)
         return result.message_id
     except Exception as exc:
-        log.error("forward_message_failed", dest=dest_channel_id, msg_id=message.id, error=str(exc))
+        log.error("forward_message_failed", dest=dest_channel_id, from_chat=from_chat_id, msg_id=message.id, error=str(exc))
         return None
     finally:
         await bot.session.close()
@@ -52,10 +54,10 @@ async def forward_album(
     if not messages:
         return []
     messages = sorted(messages, key=lambda m: m.id)
+    from_chat_id = _telethon_peer_to_chat_id(messages[0].peer_id)
     bot = _get_bot()
     ids = []
     try:
-        from_chat_id = _telethon_peer_to_chat_id(messages[0].peer_id)
         for msg in messages:
             try:
                 result = await bot.forward_message(
@@ -64,8 +66,9 @@ async def forward_album(
                     message_id=msg.id,
                 )
                 ids.append(result.message_id)
+                log.info("album_forward_ok", dest=dest_channel_id, msg_id=msg.id)
             except Exception as exc:
-                log.error("forward_album_msg_failed", dest=dest_channel_id, msg_id=msg.id, error=str(exc))
+                log.error("forward_album_msg_failed", dest=dest_channel_id, from_chat=from_chat_id, msg_id=msg.id, error=str(exc))
     finally:
         await bot.session.close()
     return ids
