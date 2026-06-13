@@ -71,12 +71,13 @@ async def run_listener(client: TelegramClient) -> None:
         async def on_new_message(event: events.NewMessage.Event) -> None:
             chat_id = event.chat_id
             if chat_id not in known_ids:
-                # Unknown channel — try to fix stale ID in background
+                log.info("unknown_channel_event", chat_id=chat_id, msg_id=event.message.id)
                 fixed = await _try_fix_channel_id(client, chat_id)
                 if fixed:
                     await _reload()
                     # Process the message now that ID is fixed
                 else:
+                    log.info("unknown_channel_skipped", chat_id=chat_id)
                     return
             log.info("event_received", chat_id=chat_id, msg_id=event.message.id)
             try:
