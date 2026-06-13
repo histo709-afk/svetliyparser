@@ -279,15 +279,13 @@ async def handle_edited_message(
                         text=text,
                         formatting_entities=entities if entities else None,
                     )
-                    log.debug(
-                        "edited_copy",
-                        dest=copy.dest_channel_id,
-                        dest_msg=copy.dest_message_id,
-                    )
                 except Exception as exc:
-                    err = f"Edit failed: dest={copy.dest_channel_id} msg={copy.dest_message_id}: {exc}"
-                    log.warning("edit_copy_failed", error=str(exc))
-                    await _log_error(err)
+                    if "not modified" in str(exc).lower():
+                        pass  # content unchanged, ignore
+                    else:
+                        err = f"Edit failed: dest={copy.dest_channel_id} msg={copy.dest_message_id}: {exc}"
+                        log.warning("edit_copy_failed", error=str(exc))
+                        await _log_error(err)
 
         except Exception as exc:
             log.error("handle_edit_error", error=str(exc))
