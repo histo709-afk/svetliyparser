@@ -15,7 +15,7 @@ from app.bot.router import main_router
 from app.config import settings
 from app.database import init_db
 from app.telethon_client.client import start_client
-from app.telethon_client.listener import fix_all_stale_ids, run_listener
+from app.telethon_client.listener import fix_all_stale_ids, run_listener, warm_up_channels
 
 # Configure structlog
 structlog.configure(
@@ -66,9 +66,15 @@ async def start_telethon() -> None:
     client = await start_client()
     log.info("telethon_authenticated")
     # Fix all stale telegram_ids using dialog entity cache (no flood limits)
-    await fix_all_stale_ids(client)
-    # Request all pending updates from Telegram so we don't miss posts
-    await client.catch_up()
+    fixed = await fix_all_stale_ids(client)
+    # Load known_ids and warm up pts tracking for all source channels
+    from app.database import async_session_factory
+    from app.repositories.channel_repo import ChannelRepository
+    async with async_session_factory() as session:
+        repo = ChannelRepository(session)
+        sources = await repo.list_active_sources()
+        source_ids = {s.telegram_id for s in sources}
+    await warm_up_channels(client, source_ids)
     # run_listener (reload loop) and run_until_disconnected must run concurrently
     await asyncio.gather(
         run_listener(client),

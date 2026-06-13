@@ -15,6 +15,23 @@ log = structlog.get_logger(__name__)
 RELOAD_INTERVAL = 60  # seconds
 
 
+async def warm_up_channels(client: TelegramClient, known_ids: set) -> None:
+    """
+    Fetch 1 message from each source channel so Telethon registers pts tracking
+    and Telegram starts delivering push updates for those channels.
+    """
+    log.info("warming_up_channels", count=len(known_ids))
+    success = 0
+    for cid in known_ids:
+        try:
+            await client.get_messages(cid, limit=1)
+            success += 1
+            await asyncio.sleep(0.05)
+        except Exception:
+            pass
+    log.info("warm_up_done", success=success, total=len(known_ids))
+
+
 async def join_missing_sources(client: TelegramClient) -> None:
     """Join all source channels that userbot is not already subscribed to."""
     from telethon.tl.functions.channels import JoinChannelRequest
