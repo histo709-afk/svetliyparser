@@ -65,8 +65,11 @@ async def start_telethon() -> None:
     log.info("starting_telethon_client")
     client = await start_client()
     log.info("telethon_authenticated")
-    await run_listener(client)
-    await client.run_until_disconnected()
+    # run_listener (reload loop) and run_until_disconnected must run concurrently
+    await asyncio.gather(
+        run_listener(client),
+        client.run_until_disconnected(),
+    )
 
 
 async def main() -> None:
