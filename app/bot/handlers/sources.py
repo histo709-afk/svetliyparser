@@ -133,12 +133,26 @@ async def cmd_list_sources(message: Message) -> None:
         await message.answer("📭 Источники не добавлены.", reply_markup=back_to_menu_keyboard())
         return
 
-    lines = ["📋 <b>Источники:</b>\n"]
+    lines = []
     for s in sources:
         status = "✅" if s.is_active else "⏸"
         lines.append(f"{status} {channel_display_name(s)}")
 
-    await message.answer("\n".join(lines), reply_markup=back_to_menu_keyboard(), parse_mode="HTML")
+    # Split into chunks of 50 to avoid message too long
+    header = f"📋 <b>Источники ({len(sources)}):</b>\n\n"
+    chunk, chunks = [], []
+    for line in lines:
+        chunk.append(line)
+        if len(chunk) == 50:
+            chunks.append(chunk)
+            chunk = []
+    if chunk:
+        chunks.append(chunk)
+
+    for i, ch in enumerate(chunks):
+        text = (header if i == 0 else "") + "\n".join(ch)
+        kb = back_to_menu_keyboard() if i == len(chunks) - 1 else None
+        await message.answer(text, reply_markup=kb, parse_mode="HTML")
 
 
 @router.message(Command("removesource"))
