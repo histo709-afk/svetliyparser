@@ -139,10 +139,12 @@ async def _flush_album(
 
             source = await channel_repo.get_source_by_telegram_id(source_channel_id)
             if source is None or not source.is_active:
+                log.warning("album_source_not_found", source_channel_id=source_channel_id)
                 return
 
             routes = await route_repo.list_routes_for_source(source.id)
             if not routes:
+                log.warning("album_no_routes", source_id=source.id)
                 return
 
             first_msg_id = messages[0].id
@@ -159,6 +161,8 @@ async def _flush_album(
                 )
                 if existing is None:
                     dests_to_forward.append(route)
+
+            log.info("album_forwarding", source_id=source.id, dests=len(dests_to_forward))
 
             async def _forward_album_one(route):
                 dest = route.destination
