@@ -50,6 +50,7 @@ async def run_listener(client: TelegramClient) -> None:
 
         @client.on(events.NewMessage(chats=chats_arg))
         async def on_new_message(event: events.NewMessage.Event) -> None:
+            log.info("event_received", chat_id=event.chat_id, msg_id=event.message.id)
             try:
                 await sync_service.handle_new_message(event, client)
             except Exception as exc:
