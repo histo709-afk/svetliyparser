@@ -44,6 +44,12 @@ async def run_listener(client: TelegramClient) -> None:
 
         ids_set = set(channel_ids)
 
+        # Debug: log ALL raw updates to see if any arrive at all
+        from telethon import events as _events
+        @client.on(_events.Raw)
+        async def on_raw(update) -> None:
+            log.info("raw_update", t=type(update).__name__)
+
         # No chats= filter — filter manually to avoid entity resolution issues
         @client.on(events.NewMessage())
         async def on_new_message(event: events.NewMessage.Event) -> None:
