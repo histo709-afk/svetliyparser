@@ -147,30 +147,30 @@ async def _flush_album(
 
             first_msg_id = messages[0].id
 
-            for route in routes:
-                dest = route.destination
-                if dest is None or not dest.is_active:
-                    continue
+            active_routes = [
+                r for r in routes
+                if r.destination is not None and r.destination.is_active
+            ]
 
-                # Dedup check (use first message of album)
+            dests_to_forward = []
+            for route in active_routes:
                 existing = await msg_repo.find_copy_for_dest(
-                    source_channel_id, first_msg_id, dest.telegram_id
+                    source_channel_id, first_msg_id, route.destination.telegram_id
                 )
-                if existing is not None:
-                    continue
+                if existing is None:
+                    dests_to_forward.append(route)
 
+            async def _forward_album_one(route):
+                dest = route.destination
                 dest_ids = await forward_album(
                     telethon_client, messages, dest.telegram_id
                 )
                 if not dest_ids:
                     err = f"Album forward failed: src={source_channel_id} group={grouped_id} dest={dest.telegram_id}"
-                    log.error("album_forward_failed", **{"src": source_channel_id, "group": grouped_id, "dest": dest.telegram_id})
+                    log.error("album_forward_failed", src=source_channel_id, group=grouped_id, dest=dest.telegram_id)
                     await _log_error(err)
-                    continue
-
-                for i, (orig_msg, dest_id) in enumerate(
-                    zip(messages, dest_ids)
-                ):
+                    return
+                for orig_msg, dest_id in zip(messages, dest_ids):
                     await msg_repo.save(
                         source_channel_id=source_channel_id,
                         source_message_id=orig_msg.id,
@@ -179,6 +179,7 @@ async def _flush_album(
                         media_group_id=grouped_id,
                     )
 
+            await asyncio.gather(*[_forward_album_one(r) for r in dests_to_forward])
             await session.commit()
         except Exception as exc:
             log.error("flush_album_error", error=str(exc))
@@ -205,30 +206,33 @@ async def _process_single_message(
             if not routes:
                 return
 
-            for route in routes:
-                dest = route.destination
-                if dest is None or not dest.is_active:
-                    continue
+            active_routes = [
+                r for r in routes
+                if r.destination is not None and r.destination.is_active
+            ]
 
+            # Dedup check
+            dests_to_forward = []
+            for route in active_routes:
                 existing = await msg_repo.find_copy_for_dest(
-                    source_channel_id, message.id, dest.telegram_id
+                    source_channel_id, message.id, route.destination.telegram_id
                 )
-                if existing is not None:
-                    log.debug(
-                        "skipping_duplicate",
-                        src_msg=message.id,
-                        dest=dest.telegram_id,
-                    )
-                    continue
+                if existing is None:
+                    dests_to_forward.append(route)
 
+            if not dests_to_forward:
+                return
+
+            # Forward to all destinations in parallel
+            async def _forward_one(route):
+                dest = route.destination
                 dest_msg_id = await forward_message(
                     telethon_client, message, dest.telegram_id
                 )
                 if dest_msg_id is None:
                     err = f"Forward failed: src_channel={source_channel_id} src_msg={message.id} dest={dest.telegram_id}"
                     await _log_error(err)
-                    continue
-
+                    return
                 await msg_repo.save(
                     source_channel_id=source_channel_id,
                     source_message_id=message.id,
@@ -245,6 +249,7 @@ async def _process_single_message(
                     dest_msg_id,
                 )
 
+            await asyncio.gather(*[_forward_one(r) for r in dests_to_forward])
             await session.commit()
         except Exception as exc:
             log.error("process_message_error", error=str(exc))

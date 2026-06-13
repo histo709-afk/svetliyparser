@@ -6,18 +6,10 @@ from typing import List, Optional
 
 import structlog
 from telethon import TelegramClient
-from telethon.tl.types import (
-    Message,
-    MessageMediaDocument,
-    MessageMediaPhoto,
-    MessageMediaPoll,
-    InputMediaPoll,
-)
+from telethon.tl.functions.messages import ForwardMessagesRequest
+from telethon.tl.types import Message
 
 log = structlog.get_logger(__name__)
-
-# Rate limiting delay between sends (seconds)
-SEND_DELAY = 0.4
 
 
 async def forward_message(
@@ -25,58 +17,28 @@ async def forward_message(
     message: Message,
     dest_channel_id: int,
 ) -> Optional[int]:
-    """Forward a single message to a destination channel.
+    """Forward a single message to a destination channel via native forward.
 
     Returns the destination message ID, or None on failure.
     """
-    await asyncio.sleep(SEND_DELAY)
     try:
-        text = message.message or ""
-        entities = message.entities or []
-
-        if message.media is None:
-            # Pure text message
-            sent = await client.send_message(
-                entity=dest_channel_id,
-                message=text,
-                formatting_entities=entities if entities else None,
-                link_preview=False,
+        result = await client(
+            ForwardMessagesRequest(
+                from_peer=message.peer_id,
+                id=[message.id],
+                to_peer=dest_channel_id,
+                drop_author=False,
+                noforwards=False,
             )
-            return sent.id
-
-        if isinstance(message.media, MessageMediaPoll):
-            # Polls cannot be forwarded directly — re-create them
-            poll = message.media.poll
-            results = message.media.results
-            try:
-                sent = await client.send_message(
-                    entity=dest_channel_id,
-                    message=InputMediaPoll(poll=poll),
-                )
-                return sent.id
-            except Exception as exc:
-                log.warning("poll_forward_failed", error=str(exc))
-                # Fall back to text
-                poll_text = f"📊 {poll.question.text}\n" + "\n".join(
-                    f"• {a.text.text}" for a in poll.answers
-                )
-                sent = await client.send_message(
-                    entity=dest_channel_id,
-                    message=poll_text,
-                )
-                return sent.id
-
-        # Photo / Video / Document / Audio / Voice / Sticker — use send_file
-        sent = await client.send_file(
-            entity=dest_channel_id,
-            file=message.media,
-            caption=text,
-            formatting_entities=entities if entities else None,
         )
-        if isinstance(sent, list):
-            return sent[0].id
-        return sent.id
-
+        # result.updates contains the new message
+        for update in result.updates:
+            if hasattr(update, "id"):
+                return update.id
+        # fallback: parse from result.messages
+        if hasattr(result, "messages") and result.messages:
+            return result.messages[0].id
+        return None
     except Exception as exc:
         log.error(
             "forward_message_failed",
@@ -92,35 +54,31 @@ async def forward_album(
     messages: List[Message],
     dest_channel_id: int,
 ) -> List[int]:
-    """Forward a media group (album) to a destination channel.
+    """Forward a media group (album) to a destination channel via native forward.
 
     Returns list of destination message IDs.
     """
-    await asyncio.sleep(SEND_DELAY)
     if not messages:
         return []
 
+    messages = sorted(messages, key=lambda m: m.id)
     try:
-        # Sort by ID to preserve order
-        messages = sorted(messages, key=lambda m: m.id)
-        files = [m.media for m in messages if m.media is not None]
-        if not files:
-            return []
-
-        # Use caption from first message with text
-        caption = next((m.message for m in messages if m.message), "")
-        entities = next((m.entities for m in messages if m.entities), None)
-
-        sent = await client.send_file(
-            entity=dest_channel_id,
-            file=files,
-            caption=caption,
-            formatting_entities=entities,
+        result = await client(
+            ForwardMessagesRequest(
+                from_peer=messages[0].peer_id,
+                id=[m.id for m in messages],
+                to_peer=dest_channel_id,
+                drop_author=False,
+                noforwards=False,
+            )
         )
-        if isinstance(sent, list):
-            return [m.id for m in sent]
-        return [sent.id]
-
+        ids = []
+        for update in result.updates:
+            if hasattr(update, "id"):
+                ids.append(update.id)
+        if not ids and hasattr(result, "messages") and result.messages:
+            ids = [m.id for m in result.messages]
+        return ids
     except Exception as exc:
         log.error(
             "forward_album_failed",
@@ -128,10 +86,4 @@ async def forward_album(
             group_size=len(messages),
             error=str(exc),
         )
-        # Try forwarding individually as fallback
-        ids = []
-        for msg in messages:
-            mid = await forward_message(client, msg, dest_channel_id)
-            if mid is not None:
-                ids.append(mid)
-        return ids
+        return []
