@@ -307,6 +307,123 @@ async def handle_edited_message(
             await _log_error(f"handle_edit_error: {exc}")
 
 
+# {source_channel_id: last_processed_message_id}
+_last_seen: Dict[int, int] = {}
+
+POLL_INTERVAL = 30  # seconds
+
+
+async def poll_sources(client: TelegramClient) -> None:
+    """
+    Periodically poll all active source channels for new messages.
+    This is the primary delivery mechanism — push updates are unreliable
+    for accounts subscribed to many channels.
+    """
+    log.info("poll_loop_started", interval=POLL_INTERVAL)
+    while True:
+        await asyncio.sleep(POLL_INTERVAL)
+        try:
+            async with async_session_factory() as session:
+                channel_repo = ChannelRepository(session)
+                sources = await channel_repo.list_active_sources()
+
+            for source in sources:
+                try:
+                    await _poll_one(client, source.telegram_id)
+                    await asyncio.sleep(0.3)
+                except Exception as exc:
+                    log.warning("poll_one_error", source=source.telegram_id, error=str(exc)[:80])
+        except Exception as exc:
+            log.error("poll_loop_error", error=str(exc))
+
+
+async def _poll_one(client: TelegramClient, source_channel_id: int) -> None:
+    """Fetch recent messages from one source channel and process any new ones."""
+    last_id = _last_seen.get(source_channel_id, 0)
+
+    messages = await client.get_messages(source_channel_id, limit=5, min_id=last_id)
+    if not messages:
+        return
+
+    # Group by grouped_id (albums)
+    singles: List[Message] = []
+    albums: Dict[str, List[Message]] = {}
+
+    for msg in messages:
+        if msg.id > _last_seen.get(source_channel_id, 0):
+            _last_seen[source_channel_id] = msg.id
+
+        gid = str(msg.grouped_id) if getattr(msg, "grouped_id", None) else None
+        if gid:
+            albums.setdefault(gid, []).append(msg)
+        else:
+            singles.append(msg)
+
+    for msg in singles:
+        await _process_single_message(msg, source_channel_id, client)
+
+    for gid, msgs in albums.items():
+        await _process_album_poll(msgs, source_channel_id, gid, client)
+
+
+async def _process_album_poll(
+    messages: List[Message],
+    source_channel_id: int,
+    grouped_id: str,
+    client: TelegramClient,
+) -> None:
+    """Process a polled album — same logic as _flush_album but without buffering."""
+    messages = sorted(messages, key=lambda m: m.id)
+    async with async_session_factory() as session:
+        try:
+            channel_repo = ChannelRepository(session)
+            route_repo = RouteRepository(session)
+            msg_repo = MessageRepository(session)
+
+            source = await channel_repo.get_source_by_telegram_id(source_channel_id)
+            if source is None or not source.is_active:
+                return
+
+            routes = await route_repo.list_routes_for_source(source.id)
+            active_routes = [r for r in routes if r.destination and r.destination.is_active]
+            first_msg_id = messages[0].id
+
+            dests_to_forward = []
+            for route in active_routes:
+                existing = await msg_repo.find_copy_for_dest(
+                    source_channel_id, first_msg_id, route.destination.telegram_id
+                )
+                if existing is None:
+                    dests_to_forward.append(route)
+
+            if not dests_to_forward:
+                return
+
+            log.info("poll_album_forwarding", source=source_channel_id, group=grouped_id, dests=len(dests_to_forward))
+
+            async def _fwd(route):
+                dest = route.destination
+                dest_ids = await send_album(client, messages, dest.telegram_id)
+                if not dest_ids:
+                    log.error("poll_album_failed", src=source_channel_id, dest=dest.telegram_id)
+                    return
+                for orig_msg, dest_id in zip(messages, dest_ids):
+                    await msg_repo.save(
+                        source_channel_id=source_channel_id,
+                        source_message_id=orig_msg.id,
+                        dest_channel_id=dest.telegram_id,
+                        dest_message_id=dest_id,
+                        media_group_id=grouped_id,
+                    )
+                log.info("poll_album_sent", src=source_channel_id, dest=dest.telegram_id, count=len(dest_ids))
+
+            await asyncio.gather(*[_fwd(r) for r in dests_to_forward])
+            await session.commit()
+        except Exception as exc:
+            log.error("poll_album_error", error=str(exc))
+            await session.rollback()
+
+
 async def get_last_errors(n: int = 10) -> List[str]:
     """Fetch last N errors from Redis."""
     try:
