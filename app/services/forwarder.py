@@ -15,10 +15,6 @@ def _get_bot() -> Bot:
     return Bot(token=settings.BOT_TOKEN)
 
 
-def _get_entities(message) -> Optional[list]:
-    entities = getattr(message, "entities", None) or []
-    return entities if entities else None
-
 
 async def send_message(
     client,
@@ -29,21 +25,16 @@ async def send_message(
     bot = _get_bot()
     try:
         text = message.message or message.text or ""
-        entities = _get_entities(message)
         media = getattr(message, "media", None)
 
         if media is None:
-            # Text-only
             result = await bot.send_message(
                 chat_id=dest_channel_id,
                 text=text or ".",
-                entities=entities or None,
             )
             return result.message_id
 
-        # Determine media type
         from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
-        from telethon.tl.types import DocumentAttributeVideo
 
         if isinstance(media, MessageMediaPhoto):
             data = await client.download_media(message, bytes)
@@ -51,7 +42,6 @@ async def send_message(
                 chat_id=dest_channel_id,
                 photo=BufferedInputFile(data, "photo.jpg"),
                 caption=text or None,
-                caption_entities=entities or None,
             )
             return result.message_id
 
@@ -68,7 +58,6 @@ async def send_message(
                     chat_id=dest_channel_id,
                     video=BufferedInputFile(data, filename or "video.mp4"),
                     caption=text or None,
-                    caption_entities=entities or None,
                 )
             else:
                 result = await bot.send_document(
@@ -121,10 +110,7 @@ async def send_album(
 
         for msg in messages:
             text = msg.message or ""
-            entities = _get_entities(msg)
-            # Only first item gets caption in a media group
             cap = text if not caption_used and text else None
-            cap_entities = (entities or None) if cap else None
             if cap:
                 caption_used = True
 
@@ -137,7 +123,6 @@ async def send_album(
                 media_items.append(InputMediaPhoto(
                     media=BufferedInputFile(data, "photo.jpg"),
                     caption=cap,
-                    caption_entities=cap_entities,
                 ))
             elif isinstance(media, MessageMediaDocument):
                 doc = media.document
