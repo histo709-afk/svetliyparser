@@ -21,6 +21,12 @@ class RouteRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_route_by_id(self, route_id: int) -> Optional[Route]:
+        result = await self.session.execute(
+            select(Route).where(Route.id == route_id)
+        )
+        return result.scalar_one_or_none()
+
     async def list_active_routes(self) -> List[Route]:
         result = await self.session.execute(
             select(Route).where(Route.is_active.is_(True))
