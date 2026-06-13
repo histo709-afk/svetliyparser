@@ -233,13 +233,16 @@ async def _process_single_message(
             # Forward to all destinations in parallel
             async def _forward_one(route):
                 dest = route.destination
+                log.info("sending_message", src=source_channel_id, msg=message.id, dest=dest.telegram_id)
                 dest_msg_id = await send_message(
                     telethon_client, message, dest.telegram_id,
                 )
                 if dest_msg_id is None:
                     err = f"Forward failed: src_channel={source_channel_id} src_msg={message.id} dest={dest.telegram_id}"
+                    log.error("forward_failed", src=source_channel_id, msg=message.id, dest=dest.telegram_id)
                     await _log_error(err)
                     return
+                log.info("message_sent", src=source_channel_id, msg=message.id, dest=dest.telegram_id, dest_msg=dest_msg_id)
                 await msg_repo.save(
                     source_channel_id=source_channel_id,
                     source_message_id=message.id,

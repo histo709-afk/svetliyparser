@@ -61,8 +61,8 @@ async def run_listener(client: TelegramClient) -> None:
     """Start listening for messages and periodically reload channel list."""
 
     known_ids: set[int] = set()
-    # Track channels currently being fixed to avoid duplicate concurrent fixes
     _fixing: set[int] = set()
+    _skip_ids: set[int] = set()  # chats that are not sources and never will be
     new_handler = None
     edit_handler = None
 
@@ -118,13 +118,16 @@ async def run_listener(client: TelegramClient) -> None:
         @client.on(events.NewMessage())
         async def on_new_message(event: events.NewMessage.Event) -> None:
             chat_id = event.chat_id
+            if chat_id in _skip_ids:
+                return
             if chat_id not in known_ids:
                 peer = getattr(event.message, "peer_id", None)
                 fixed = await _try_fix(chat_id, peer)
                 if fixed:
                     await _reload()
-                    known_ids.add(chat_id)  # immediate update to handle album siblings
+                    known_ids.add(chat_id)
                 else:
+                    _skip_ids.add(chat_id)
                     return
             log.info("event_received", chat_id=chat_id, msg_id=event.message.id)
             try:
