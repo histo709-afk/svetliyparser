@@ -12,7 +12,7 @@ from app.database import async_session_factory
 from app.repositories.channel_repo import ChannelRepository
 from app.repositories.message_repo import MessageRepository
 from app.repositories.route_repo import RouteRepository
-from app.services.forwarder import forward_album, forward_message
+from app.services.forwarder import send_album, send_message
 
 log = structlog.get_logger(__name__)
 
@@ -166,9 +166,8 @@ async def _flush_album(
 
             async def _forward_album_one(route):
                 dest = route.destination
-                dest_ids = await forward_album(
+                dest_ids = await send_album(
                     telethon_client, messages, dest.telegram_id,
-                    from_chat_username=source.username or None,
                 )
                 if not dest_ids:
                     err = f"Album forward failed: src={source_channel_id} group={grouped_id} dest={dest.telegram_id}"
@@ -234,9 +233,8 @@ async def _process_single_message(
             # Forward to all destinations in parallel
             async def _forward_one(route):
                 dest = route.destination
-                dest_msg_id = await forward_message(
+                dest_msg_id = await send_message(
                     telethon_client, message, dest.telegram_id,
-                    from_chat_username=source.username or None,
                 )
                 if dest_msg_id is None:
                     err = f"Forward failed: src_channel={source_channel_id} src_msg={message.id} dest={dest.telegram_id}"

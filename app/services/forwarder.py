@@ -1,10 +1,11 @@
-"""Low-level message forwarding via Telegram Bot API."""
+"""Copy messages from source to destination: download via Telethon, send via Bot API."""
 from __future__ import annotations
 
-from typing import Any, List, Optional
+from typing import List, Optional
 
 import structlog
 from aiogram import Bot
+from aiogram.types import BufferedInputFile, InputMediaPhoto, InputMediaVideo
 
 log = structlog.get_logger(__name__)
 
@@ -14,69 +15,186 @@ def _get_bot() -> Bot:
     return Bot(token=settings.BOT_TOKEN)
 
 
-def _peer_to_chat_id(peer_id) -> int:
-    """Convert Telethon PeerChannel to Bot API chat_id (-100XXXXXXXXX)."""
-    cid = getattr(peer_id, "channel_id", None)
-    if cid:
-        return -int(f"100{cid}")
-    return 0
+def _get_entities(message) -> Optional[list]:
+    entities = getattr(message, "entities", None) or []
+    return entities if entities else None
 
 
-async def forward_message(
-    _client,
+async def send_message(
+    client,
     message,
     dest_channel_id: int,
-    from_chat_username: Optional[str] = None,
 ) -> Optional[int]:
-    """Forward a single message to destination channel via Bot API."""
-    from_chat_id: Any = f"@{from_chat_username}" if from_chat_username else _peer_to_chat_id(message.peer_id)
-    if not from_chat_id:
-        log.error("forward_no_from_chat", msg_id=message.id)
-        return None
+    """Copy a single message (text / photo / video) to dest via Bot API."""
     bot = _get_bot()
     try:
-        result = await bot.forward_message(
-            chat_id=dest_channel_id,
-            from_chat_id=from_chat_id,
-            message_id=message.id,
-        )
-        log.info("forward_ok", dest=dest_channel_id, src_msg=message.id, dest_msg=result.message_id)
-        return result.message_id
+        text = message.message or message.text or ""
+        entities = _get_entities(message)
+        media = getattr(message, "media", None)
+
+        if media is None:
+            # Text-only
+            result = await bot.send_message(
+                chat_id=dest_channel_id,
+                text=text or ".",
+                entities=entities or None,
+            )
+            return result.message_id
+
+        # Determine media type
+        from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
+        from telethon.tl.types import DocumentAttributeVideo
+
+        if isinstance(media, MessageMediaPhoto):
+            data = await client.download_media(message, bytes)
+            result = await bot.send_photo(
+                chat_id=dest_channel_id,
+                photo=BufferedInputFile(data, "photo.jpg"),
+                caption=text or None,
+                caption_entities=entities or None,
+            )
+            return result.message_id
+
+        if isinstance(media, MessageMediaDocument):
+            doc = media.document
+            attrs = {type(a).__name__: a for a in (doc.attributes or [])}
+            is_video = "DocumentAttributeVideo" in attrs
+
+            data = await client.download_media(message, bytes)
+            filename = getattr(attrs.get("DocumentAttributeFilename"), "file_name", None)
+
+            if is_video:
+                result = await bot.send_video(
+                    chat_id=dest_channel_id,
+                    video=BufferedInputFile(data, filename or "video.mp4"),
+                    caption=text or None,
+                    caption_entities=entities or None,
+                )
+            else:
+                result = await bot.send_document(
+                    chat_id=dest_channel_id,
+                    document=BufferedInputFile(data, filename or "file"),
+                    caption=text or None,
+                    caption_entities=entities or None,
+                )
+            return result.message_id
+
+        # Fallback: send as document
+        data = await client.download_media(message, bytes)
+        if data:
+            result = await bot.send_document(
+                chat_id=dest_channel_id,
+                document=BufferedInputFile(data, "file"),
+                caption=text or None,
+            )
+            return result.message_id
+
+        if text:
+            result = await bot.send_message(chat_id=dest_channel_id, text=text)
+            return result.message_id
+
+        log.warning("send_message_nothing_to_send", dest=dest_channel_id, msg_id=message.id)
+        return None
+
     except Exception as exc:
-        log.error("forward_message_failed", dest=dest_channel_id, from_chat=from_chat_id, msg_id=message.id, error=str(exc))
+        log.error("send_message_failed", dest=dest_channel_id, msg_id=message.id, error=str(exc))
         return None
     finally:
         await bot.session.close()
 
 
-async def forward_album(
-    _client,
+async def send_album(
+    client,
     messages: List,
     dest_channel_id: int,
-    from_chat_username: Optional[str] = None,
 ) -> List[int]:
-    """Forward album messages via Bot API."""
+    """Copy a media group (album) to dest via Bot API send_media_group."""
     if not messages:
         return []
     messages = sorted(messages, key=lambda m: m.id)
-    from_chat_id: Any = f"@{from_chat_username}" if from_chat_username else _peer_to_chat_id(messages[0].peer_id)
-    if not from_chat_id:
-        log.error("forward_album_no_from_chat", count=len(messages))
-        return []
     bot = _get_bot()
-    ids = []
     try:
+        from telethon.tl.types import MessageMediaPhoto, MessageMediaDocument
+
+        media_items = []
+        caption_used = False
+
         for msg in messages:
-            try:
-                result = await bot.forward_message(
+            text = msg.message or ""
+            entities = _get_entities(msg)
+            # Only first item gets caption in a media group
+            cap = text if not caption_used and text else None
+            cap_entities = (entities or None) if cap else None
+            if cap:
+                caption_used = True
+
+            media = getattr(msg, "media", None)
+            if media is None:
+                continue
+
+            if isinstance(media, MessageMediaPhoto):
+                data = await client.download_media(msg, bytes)
+                media_items.append(InputMediaPhoto(
+                    media=BufferedInputFile(data, "photo.jpg"),
+                    caption=cap,
+                    caption_entities=cap_entities,
+                ))
+            elif isinstance(media, MessageMediaDocument):
+                doc = media.document
+                attrs = {type(a).__name__: a for a in (doc.attributes or [])}
+                is_video = "DocumentAttributeVideo" in attrs
+                filename = getattr(attrs.get("DocumentAttributeFilename"), "file_name", None)
+                data = await client.download_media(msg, bytes)
+                if is_video:
+                    media_items.append(InputMediaVideo(
+                        media=BufferedInputFile(data, filename or "video.mp4"),
+                        caption=cap,
+                        caption_entities=cap_entities,
+                    ))
+                else:
+                    media_items.append(InputMediaPhoto(
+                        media=BufferedInputFile(data, filename or "file"),
+                        caption=cap,
+                        caption_entities=cap_entities,
+                    ))
+
+        if not media_items:
+            # All text — send first message text
+            text = messages[0].message or ""
+            if text:
+                result = await bot.send_message(chat_id=dest_channel_id, text=text)
+                return [result.message_id]
+            return []
+
+        if len(media_items) == 1:
+            # send_media_group requires >=2 items; send single
+            item = media_items[0]
+            if isinstance(item, InputMediaPhoto):
+                result = await bot.send_photo(
                     chat_id=dest_channel_id,
-                    from_chat_id=from_chat_id,
-                    message_id=msg.id,
+                    photo=item.media,
+                    caption=item.caption,
+                    caption_entities=item.caption_entities,
                 )
-                ids.append(result.message_id)
-                log.info("album_forward_ok", dest=dest_channel_id, src_msg=msg.id, dest_msg=result.message_id)
-            except Exception as exc:
-                log.error("forward_album_msg_failed", dest=dest_channel_id, from_chat=from_chat_id, msg_id=msg.id, error=str(exc))
+            else:
+                result = await bot.send_video(
+                    chat_id=dest_channel_id,
+                    video=item.media,
+                    caption=item.caption,
+                    caption_entities=item.caption_entities,
+                )
+            return [result.message_id]
+
+        results = await bot.send_media_group(
+            chat_id=dest_channel_id,
+            media=media_items,
+        )
+        ids = [r.message_id for r in results]
+        log.info("album_sent", dest=dest_channel_id, count=len(ids))
+        return ids
+
+    except Exception as exc:
+        log.error("send_album_failed", dest=dest_channel_id, error=str(exc))
+        return []
     finally:
         await bot.session.close()
-    return ids
