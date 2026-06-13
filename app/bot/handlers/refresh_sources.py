@@ -1,9 +1,9 @@
-"""Handler to refresh telegram_ids for all source channels."""
+"""Handler to refresh telegram_ids for all source channels via Bot API."""
 from __future__ import annotations
 
 import asyncio
 
-from aiogram import Router
+from aiogram import Bot, Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
@@ -13,11 +13,13 @@ from app.repositories.channel_repo import ChannelRepository
 router = Router(name="refresh_sources")
 
 
-@router.message(Command("refreshsources"))
-async def refresh_sources(message: Message) -> None:
-    from app.telethon_client.client import telethon_client
+@router.message(Command("fixids"))
+async def fix_ids(message: Message) -> None:
+    """Refresh telegram_ids using Bot API get_chat (no Telethon flood limit)."""
+    from app.config import settings
+    bot = Bot(token=settings.BOT_TOKEN)
 
-    await message.answer("🔄 Обновляю telegram_id источников...")
+    await message.answer("🔄 Обновляю ID каналов через Bot API...")
 
     async with async_session_factory() as session:
         repo = ChannelRepository(session)
@@ -32,8 +34,8 @@ async def refresh_sources(message: Message) -> None:
             skipped += 1
             continue
         try:
-            entity = await telethon_client.get_entity(src.username)
-            new_id = -int(f"100{entity.id}")
+            chat = await bot.get_chat(f"@{src.username}")
+            new_id = chat.id
             if new_id != src.telegram_id:
                 async with async_session_factory() as session:
                     repo = ChannelRepository(session)
@@ -45,11 +47,13 @@ async def refresh_sources(message: Message) -> None:
             else:
                 skipped += 1
         except Exception as e:
-            errors.append(f"@{src.username}: {str(e)[:40]}")
-        await asyncio.sleep(0.5)
+            errors.append(f"@{src.username}: {str(e)[:50]}")
+        await asyncio.sleep(0.1)
+
+    await bot.session.close()
 
     text = (
-        f"✅ <b>Обновление завершено!</b>\n\n"
+        f"✅ <b>Готово!</b>\n\n"
         f"• Обновлено ID: <b>{updated}</b>\n"
         f"• Без изменений: <b>{skipped}</b>\n"
     )
@@ -57,3 +61,8 @@ async def refresh_sources(message: Message) -> None:
         text += f"\n⚠️ Ошибки ({len(errors)}):\n" + "\n".join(errors[:15])
 
     await message.answer(text, parse_mode="HTML")
+
+
+@router.message(Command("refreshsources"))
+async def refresh_sources(message: Message) -> None:
+    await message.answer("Используй /fixids — быстрее и без флуд-лимитов.")
