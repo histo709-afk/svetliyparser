@@ -15,7 +15,7 @@ from app.bot.router import main_router
 from app.config import settings
 from app.database import init_db
 from app.telethon_client.client import start_client
-from app.telethon_client.listener import fix_all_stale_ids, join_missing_sources, run_listener
+from app.telethon_client.listener import fix_all_stale_ids, run_listener
 
 # Configure structlog
 structlog.configure(
@@ -65,10 +65,10 @@ async def start_telethon() -> None:
     log.info("starting_telethon_client")
     client = await start_client()
     log.info("telethon_authenticated")
-    # Join any source channels the userbot hasn't subscribed to yet
-    await join_missing_sources(client)
     # Fix all stale telegram_ids using dialog entity cache (no flood limits)
     await fix_all_stale_ids(client)
+    # Request all pending updates from Telegram so we don't miss posts
+    await client.catch_up()
     # run_listener (reload loop) and run_until_disconnected must run concurrently
     await asyncio.gather(
         run_listener(client),
