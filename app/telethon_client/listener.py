@@ -15,6 +15,50 @@ log = structlog.get_logger(__name__)
 RELOAD_INTERVAL = 60  # seconds
 
 
+async def join_missing_sources(client: TelegramClient) -> None:
+    """Join all source channels that userbot is not already subscribed to."""
+    from telethon.tl.functions.channels import JoinChannelRequest
+    from telethon.errors import UserAlreadyParticipantError, FloodWaitError
+
+    # Get current dialog ids
+    try:
+        dialogs = await client.get_dialogs(limit=None)
+    except Exception as exc:
+        log.error("join_missing_get_dialogs_failed", error=str(exc))
+        return
+    dialog_ids = {d.entity.id for d in dialogs if hasattr(d, "entity")}
+
+    async with async_session_factory() as session:
+        repo = ChannelRepository(session)
+        sources = await repo.list_active_sources()
+
+    joined = 0
+    skipped = 0
+    errors = 0
+    for src in sources:
+        if not src.username:
+            skipped += 1
+            continue
+        try:
+            entity = await client.get_entity(f"@{src.username}")
+            if entity.id in dialog_ids:
+                skipped += 1
+                continue
+            await client(JoinChannelRequest(entity))
+            joined += 1
+            await asyncio.sleep(1.5)
+        except UserAlreadyParticipantError:
+            skipped += 1
+        except FloodWaitError as e:
+            log.warning("join_flood_wait", seconds=e.seconds, username=src.username)
+            await asyncio.sleep(min(e.seconds, 30))
+        except Exception as e:
+            log.warning("join_failed", username=src.username, error=str(e)[:60])
+            errors += 1
+
+    log.info("join_missing_done", joined=joined, skipped=skipped, errors=errors)
+
+
 async def fix_all_stale_ids(client: TelegramClient) -> int:
     """
     After get_dialogs(), fix all stale telegram_ids in DB by matching usernames
