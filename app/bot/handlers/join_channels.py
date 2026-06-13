@@ -32,24 +32,23 @@ async def join_all_sources(message: Message) -> None:
     errors = []
 
     for src in sources:
+        identifier = src.username or str(src.telegram_id)
         try:
-            # Try to get entity and join if not already member
-            entity = await telethon_client.get_entity(src.telegram_id)
+            entity = await telethon_client.get_entity(identifier)
             try:
-                await telethon_client(
-                    __import__('telethon.tl.functions.channels', fromlist=['JoinChannelRequest']).JoinChannelRequest(entity)
-                )
+                from telethon.tl.functions.channels import JoinChannelRequest
+                await telethon_client(JoinChannelRequest(entity))
                 joined += 1
             except Exception as e:
                 err_str = str(e)
                 if "already" in err_str.lower() or "UserAlreadyParticipant" in err_str:
                     already += 1
                 else:
-                    errors.append(f"{src.username or src.telegram_id}: {err_str[:40]}")
+                    errors.append(f"{identifier}: {err_str[:40]}")
         except Exception as e:
-            errors.append(f"{src.username or src.telegram_id}: {str(e)[:40]}")
+            errors.append(f"{identifier}: {str(e)[:40]}")
 
-        await asyncio.sleep(1)  # avoid flood
+        await asyncio.sleep(1)
 
     text = f"✅ <b>Готово!</b>\n\n"
     text += f"• Вступил: <b>{joined}</b>\n"
