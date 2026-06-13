@@ -200,16 +200,19 @@ async def _process_single_message(
 
             source = await channel_repo.get_source_by_telegram_id(source_channel_id)
             if source is None or not source.is_active:
+                log.warning("source_not_found_or_inactive", source_channel_id=source_channel_id)
                 return
 
             routes = await route_repo.list_routes_for_source(source.id)
             if not routes:
+                log.warning("no_routes_for_source", source_id=source.id)
                 return
 
             active_routes = [
                 r for r in routes
                 if r.destination is not None and r.destination.is_active
             ]
+            log.info("processing_message", source_id=source.id, routes=len(active_routes))
 
             # Dedup check
             dests_to_forward = []
