@@ -6,6 +6,7 @@ from typing import Optional
 
 import structlog
 from telethon import TelegramClient, events
+from telethon.tl.types import UpdateNewChannelMessage, UpdateEditChannelMessage
 
 from app.database import async_session_factory
 from app.repositories.channel_repo import ChannelRepository
@@ -67,6 +68,11 @@ async def run_listener(client: TelegramClient) -> None:
         if edit_handler is not None:
             client.remove_event_handler(edit_handler)
 
+        @client.on(events.Raw(UpdateNewChannelMessage))
+        async def on_raw_channel(update) -> None:
+            cid = getattr(getattr(update.message, "peer_id", None), "channel_id", None)
+            log.info("raw_channel_update", channel_id=cid, msg_id=getattr(update.message, "id", None))
+
         @client.on(events.NewMessage())
         async def on_new_message(event: events.NewMessage.Event) -> None:
             chat_id = event.chat_id
@@ -96,6 +102,7 @@ async def run_listener(client: TelegramClient) -> None:
 
         new_handler = on_new_message
         edit_handler = on_edited_message
+        # raw_channel_handler intentionally not tracked — diagnostic only
 
     await _reload()
     await register_handlers()
