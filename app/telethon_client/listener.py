@@ -36,28 +36,29 @@ async def run_listener(client: TelegramClient) -> None:
     async def register_handlers(channel_ids: List[int]) -> None:
         nonlocal new_handler, edit_handler, registered_ids
 
-        if not channel_ids:
-            log.info("no_source_channels_configured")
-            return
-
         # Remove old handlers
         if new_handler is not None:
             client.remove_event_handler(new_handler)
         if edit_handler is not None:
             client.remove_event_handler(edit_handler)
 
-        chats_arg = channel_ids if channel_ids else None
+        ids_set = set(channel_ids)
 
-        @client.on(events.NewMessage(chats=chats_arg))
+        # No chats= filter — filter manually to avoid entity resolution issues
+        @client.on(events.NewMessage())
         async def on_new_message(event: events.NewMessage.Event) -> None:
+            if event.chat_id not in ids_set:
+                return
             log.info("event_received", chat_id=event.chat_id, msg_id=event.message.id)
             try:
                 await sync_service.handle_new_message(event, client)
             except Exception as exc:
                 log.error("on_new_message_unhandled", error=str(exc))
 
-        @client.on(events.MessageEdited(chats=chats_arg))
+        @client.on(events.MessageEdited())
         async def on_edited_message(event: events.MessageEdited.Event) -> None:
+            if event.chat_id not in ids_set:
+                return
             try:
                 await sync_service.handle_edited_message(event, client)
             except Exception as exc:
@@ -65,7 +66,7 @@ async def run_listener(client: TelegramClient) -> None:
 
         new_handler = on_new_message
         edit_handler = on_edited_message
-        registered_ids = set(channel_ids)
+        registered_ids = ids_set
         log.info("handlers_registered", count=len(channel_ids))
 
     # Initial load
