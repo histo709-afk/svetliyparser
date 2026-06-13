@@ -50,7 +50,17 @@ async def run_listener(client: TelegramClient) -> None:
         @client.on(_events.Raw(UpdateNewChannelMessage))
         async def on_raw(update) -> None:
             cid = getattr(getattr(update.message, "peer_id", None), "channel_id", None)
-            log.info("raw_new_msg", channel_id=cid, msg_id=update.message.id)
+            full_id = -(int(f"100{cid}")) if cid else None
+            in_sources = full_id in ids_set if full_id else False
+            if not in_sources:
+                try:
+                    entity = await client.get_entity(update.message.peer_id)
+                    name = getattr(entity, "username", None) or getattr(entity, "title", "?")
+                except Exception:
+                    name = "?"
+                log.info("unknown_channel_msg", channel_id=cid, full_id=full_id, name=name)
+            else:
+                log.info("raw_new_msg", channel_id=cid, msg_id=update.message.id)
 
         # No chats= filter — filter manually to avoid entity resolution issues
         @client.on(events.NewMessage())
