@@ -1,7 +1,7 @@
 """Low-level message forwarding via Telegram Bot API."""
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import structlog
 from aiogram import Bot
@@ -26,9 +26,10 @@ async def forward_message(
     _client,
     message,
     dest_channel_id: int,
+    from_chat_username: Optional[str] = None,
 ) -> Optional[int]:
     """Forward a single message to destination channel via Bot API."""
-    from_chat_id = _peer_to_chat_id(message.peer_id)
+    from_chat_id: Any = f"@{from_chat_username}" if from_chat_username else _peer_to_chat_id(message.peer_id)
     if not from_chat_id:
         log.error("forward_no_from_chat", msg_id=message.id)
         return None
@@ -52,12 +53,13 @@ async def forward_album(
     _client,
     messages: List,
     dest_channel_id: int,
+    from_chat_username: Optional[str] = None,
 ) -> List[int]:
     """Forward album messages via Bot API."""
     if not messages:
         return []
     messages = sorted(messages, key=lambda m: m.id)
-    from_chat_id = _peer_to_chat_id(messages[0].peer_id)
+    from_chat_id: Any = f"@{from_chat_username}" if from_chat_username else _peer_to_chat_id(messages[0].peer_id)
     if not from_chat_id:
         log.error("forward_album_no_from_chat", count=len(messages))
         return []

@@ -167,7 +167,8 @@ async def _flush_album(
             async def _forward_album_one(route):
                 dest = route.destination
                 dest_ids = await forward_album(
-                    telethon_client, messages, dest.telegram_id
+                    telethon_client, messages, dest.telegram_id,
+                    from_chat_username=source.username or None,
                 )
                 if not dest_ids:
                     err = f"Album forward failed: src={source_channel_id} group={grouped_id} dest={dest.telegram_id}"
@@ -234,7 +235,8 @@ async def _process_single_message(
             async def _forward_one(route):
                 dest = route.destination
                 dest_msg_id = await forward_message(
-                    telethon_client, message, dest.telegram_id
+                    telethon_client, message, dest.telegram_id,
+                    from_chat_username=source.username or None,
                 )
                 if dest_msg_id is None:
                     err = f"Forward failed: src_channel={source_channel_id} src_msg={message.id} dest={dest.telegram_id}"
