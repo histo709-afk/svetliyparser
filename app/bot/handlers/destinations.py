@@ -30,6 +30,27 @@ def _get_telethon_client():
     return telethon_client
 
 
+async def _try_delete(message: Message) -> None:
+    try:
+        await message.delete()
+    except Exception:
+        pass
+
+
+async def _edit_or_answer(bot, chat_id: int, msg_id: int | None, text: str, markup) -> None:
+    if msg_id:
+        try:
+            await bot.edit_message_text(
+                chat_id=chat_id, message_id=msg_id,
+                text=text, reply_markup=markup, parse_mode="HTML",
+            )
+            return
+        except Exception:
+            pass
+    # fallback: shouldn't happen normally
+    await bot.send_message(chat_id=chat_id, text=text, reply_markup=markup, parse_mode="HTML")
+
+
 @router.message(Command("adddest"))
 @router.callback_query(F.data == "add_dest")
 async def start_add_dest(event: Message | CallbackQuery, state: FSMContext) -> None:
@@ -43,20 +64,31 @@ async def start_add_dest(event: Message | CallbackQuery, state: FSMContext) -> N
         "⚠️ Бот должен быть администратором в этом канале."
     )
     if isinstance(event, CallbackQuery):
+        await state.update_data(prompt_msg_id=event.message.message_id,
+                                prompt_chat_id=event.message.chat.id)
         await event.message.edit_text(text, reply_markup=cancel_keyboard(), parse_mode="HTML")
         await event.answer()
     else:
-        await event.answer(text, reply_markup=cancel_keyboard(), parse_mode="HTML")
+        sent = await event.answer(text, reply_markup=cancel_keyboard(), parse_mode="HTML")
+        await state.update_data(prompt_msg_id=sent.message_id, prompt_chat_id=event.chat.id)
 
 
 @router.message(AddDestStates.waiting_link)
 async def process_dest_link(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    prompt_msg_id = data.get("prompt_msg_id")
+    prompt_chat_id = data.get("prompt_chat_id") or message.chat.id
+
+    await _try_delete(message)
+
     link = message.text.strip() if message.text else ""
     if not link:
-        await message.answer("⚠️ Пожалуйста, отправьте текстовую ссылку.")
+        await _edit_or_answer(message.bot, prompt_chat_id, prompt_msg_id,
+                              "⚠️ Пожалуйста, отправьте текстовую ссылку.", cancel_keyboard())
         return
 
-    await message.answer("🔍 Ищу канал...")
+    await _edit_or_answer(message.bot, prompt_chat_id, prompt_msg_id,
+                          "🔍 Ищу канал...", None)
 
     try:
         client = _get_telethon_client()
@@ -70,35 +102,42 @@ async def process_dest_link(message: Message, state: FSMContext) -> None:
         await state.set_state(AddDestStates.waiting_source_link)
 
         prefix = "✅ Назначение добавлено!\n\n" if created else "ℹ️ Назначение уже существует.\n\n"
-        await message.answer(
+        await _edit_or_answer(
+            message.bot, prompt_chat_id, prompt_msg_id,
             f"{prefix}<b>{dest_name}</b>\n\n"
             f"Теперь введите ссылку на канал-источник:\n"
             f"• <code>@channel</code>\n"
             f"• <code>https://t.me/channel</code>",
-            reply_markup=cancel_keyboard(),
-            parse_mode="HTML",
+            cancel_keyboard(),
         )
 
     except ValueError as exc:
         await state.clear()
-        await message.answer(f"❌ Ошибка: {exc}", reply_markup=back_to_menu_keyboard())
+        await _edit_or_answer(message.bot, prompt_chat_id, prompt_msg_id,
+                              f"❌ Ошибка: {exc}", back_to_menu_keyboard())
     except Exception as exc:
         await state.clear()
-        await message.answer(f"❌ Неожиданная ошибка: {exc}", reply_markup=back_to_menu_keyboard())
+        await _edit_or_answer(message.bot, prompt_chat_id, prompt_msg_id,
+                              f"❌ Неожиданная ошибка: {exc}", back_to_menu_keyboard())
 
 
 @router.message(AddDestStates.waiting_source_link)
 async def process_source_link_for_route(message: Message, state: FSMContext) -> None:
-    link = message.text.strip() if message.text else ""
-    if not link:
-        await message.answer("⚠️ Пожалуйста, отправьте текстовую ссылку.")
-        return
-
-    await message.answer("🔍 Ищу канал...")
-
     data = await state.get_data()
+    prompt_msg_id = data.get("prompt_msg_id")
+    prompt_chat_id = data.get("prompt_chat_id") or message.chat.id
     dest_channel_id: int = data["dest_channel_id"]
     dest_name: str = data["dest_name"]
+
+    await _try_delete(message)
+
+    link = message.text.strip() if message.text else ""
+    if not link:
+        await _edit_or_answer(message.bot, prompt_chat_id, prompt_msg_id,
+                              "⚠️ Пожалуйста, отправьте текстовую ссылку.", cancel_keyboard())
+        return
+
+    await _edit_or_answer(message.bot, prompt_chat_id, prompt_msg_id, "🔍 Ищу канал...", None)
 
     try:
         client = _get_telethon_client()
@@ -119,14 +158,17 @@ async def process_source_link_for_route(message: Message, state: FSMContext) -> 
         else:
             text = f"ℹ️ Маршрут уже существует:\n\n📥 {src_name}\n⬇️\n📤 {dest_name}"
 
-        await message.answer(text, reply_markup=back_to_menu_keyboard(), parse_mode="HTML")
+        await _edit_or_answer(message.bot, prompt_chat_id, prompt_msg_id,
+                              text, back_to_menu_keyboard())
 
     except ValueError as exc:
         await state.clear()
-        await message.answer(f"❌ Ошибка: {exc}", reply_markup=back_to_menu_keyboard())
+        await _edit_or_answer(message.bot, prompt_chat_id, prompt_msg_id,
+                              f"❌ Ошибка: {exc}", back_to_menu_keyboard())
     except Exception as exc:
         await state.clear()
-        await message.answer(f"❌ Неожиданная ошибка: {exc}", reply_markup=back_to_menu_keyboard())
+        await _edit_or_answer(message.bot, prompt_chat_id, prompt_msg_id,
+                              f"❌ Неожиданная ошибка: {exc}", back_to_menu_keyboard())
 
 
 @router.message(Command("listdests"))
