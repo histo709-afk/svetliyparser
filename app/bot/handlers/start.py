@@ -11,11 +11,7 @@ from app.bot.keyboards import main_menu_keyboard
 
 router = Router(name="start")
 
-WELCOME_TEXT = (
-    "👋 <b>Светлый Парсер</b>\n\n"
-    "Бот для автоматической пересылки сообщений между Telegram-каналами.\n\n"
-    "Выберите действие:"
-)
+WELCOME_TEXT = "👋 <b>Светлый Парсер</b>"
 
 
 def _persistent_keyboard() -> ReplyKeyboardMarkup:
