@@ -39,6 +39,7 @@ def routes_filter_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="▶️ Запущенные", callback_data="routes_filter:active:0"),
         InlineKeyboardButton(text="⏸ Остановленные", callback_data="routes_filter:stopped:0"),
     )
+    builder.row(InlineKeyboardButton(text="🗄 Архив", callback_data="routes_archive"))
     builder.row(InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu"))
     return builder.as_markup()
 

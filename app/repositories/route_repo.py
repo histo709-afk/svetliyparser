@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import List, Optional
 
-from sqlalchemy import delete as sa_delete, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.route import Route
@@ -17,6 +18,7 @@ class RouteRepository:
             select(Route).where(
                 Route.source_id == source_id,
                 Route.destination_id == destination_id,
+                Route.deleted_at.is_(None),
             )
         )
         return result.scalar_one_or_none()
@@ -29,13 +31,13 @@ class RouteRepository:
 
     async def list_active_routes(self) -> List[Route]:
         result = await self.session.execute(
-            select(Route).where(Route.is_active.is_(True))
+            select(Route).where(Route.is_active.is_(True), Route.deleted_at.is_(None))
         )
         return list(result.scalars().all())
 
     async def list_stopped_routes(self) -> List[Route]:
         result = await self.session.execute(
-            select(Route).where(Route.is_active.is_(False))
+            select(Route).where(Route.is_active.is_(False), Route.deleted_at.is_(None))
         )
         return list(result.scalars().all())
 
@@ -44,12 +46,32 @@ class RouteRepository:
             select(Route).where(
                 Route.source_id == source_id,
                 Route.is_active.is_(True),
+                Route.deleted_at.is_(None),
             )
         )
         return list(result.scalars().all())
 
     async def list_all_routes(self) -> List[Route]:
-        result = await self.session.execute(select(Route))
+        result = await self.session.execute(
+            select(Route).where(Route.deleted_at.is_(None))
+        )
+        return list(result.scalars().all())
+
+    async def list_deleted_routes(self) -> List[Route]:
+        result = await self.session.execute(
+            select(Route)
+            .where(Route.deleted_at.is_not(None))
+            .order_by(Route.deleted_at.desc())
+        )
+        return list(result.scalars().all())
+
+    async def list_recently_added(self, limit: int = 20) -> List[Route]:
+        result = await self.session.execute(
+            select(Route)
+            .where(Route.deleted_at.is_(None))
+            .order_by(Route.created_at.desc())
+            .limit(limit)
+        )
         return list(result.scalars().all())
 
     async def add_route(self, source_id: int, destination_id: int) -> Route:
@@ -82,8 +104,14 @@ class RouteRepository:
         return True
 
     async def delete_route(self, route_id: int) -> bool:
+        """Soft delete — keeps the route in DB for archive."""
         result = await self.session.execute(
-            sa_delete(Route).where(Route.id == route_id)
+            select(Route).where(Route.id == route_id)
         )
+        route = result.scalar_one_or_none()
+        if route is None:
+            return False
+        route.deleted_at = datetime.now(timezone.utc)
+        route.is_active = False
         await self.session.flush()
-        return result.rowcount > 0
+        return True

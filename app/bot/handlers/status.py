@@ -273,6 +273,97 @@ async def do_delete_route(callback: CallbackQuery) -> None:
     )
 
 
+# ── ARCHIVE ───────────────────────────────────────────────────────────────────
+
+def _channel_link(title: str | None, username: str | None, fallback: str) -> str:
+    name = title or username or fallback
+    if username:
+        return f'<a href="https://t.me/{username}">{name}</a>'
+    return name
+
+
+@router.callback_query(F.data == "routes_archive")
+async def routes_archive(callback: CallbackQuery) -> None:
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from aiogram.types import InlineKeyboardButton
+    b = InlineKeyboardBuilder()
+    b.row(
+        InlineKeyboardButton(text="🗑 Удалённые", callback_data="archive_deleted"),
+        InlineKeyboardButton(text="🕓 Добавленные ранее", callback_data="archive_added"),
+    )
+    b.row(InlineKeyboardButton(text="◀️ Назад", callback_data="routes"))
+    await callback.message.edit_text(
+        "🗄 <b>Архив маршрутов</b>\n\n"
+        "Здесь вы можете посмотреть добавленные ранее или удалённые маршруты.",
+        reply_markup=b.as_markup(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "archive_deleted")
+async def archive_deleted(callback: CallbackQuery) -> None:
+    async with async_session_factory() as session:
+        repo = RouteRepository(session)
+        routes = await repo.list_deleted_routes()
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from aiogram.types import InlineKeyboardButton
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="◀️ Назад", callback_data="routes_archive"))
+
+    if not routes:
+        text = "🗑 <b>Удалённые маршруты</b>\n\nУдалённых маршрутов нет."
+    else:
+        lines = [f"🗑 <b>Удалённые маршруты</b> ({len(routes)}):\n"]
+        for r in routes:
+            src_title = r.source.title if r.source else None
+            src_user = r.source.username if r.source else None
+            dst_title = r.destination.title if r.destination else None
+            dst_user = r.destination.username if r.destination else None
+            src_link = _channel_link(src_title, src_user, f"src#{r.source_id}")
+            dst_link = _channel_link(dst_title, dst_user, f"dst#{r.destination_id}")
+            deleted = r.deleted_at.strftime("%d.%m.%Y") if r.deleted_at else "?"
+            lines.append(f"• {src_link} → {dst_link} <i>(удалён {deleted})</i>")
+        text = "\n".join(lines)
+
+    await callback.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML",
+                                     disable_web_page_preview=True)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "archive_added")
+async def archive_added(callback: CallbackQuery) -> None:
+    async with async_session_factory() as session:
+        repo = RouteRepository(session)
+        routes = await repo.list_recently_added(limit=20)
+
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from aiogram.types import InlineKeyboardButton
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="◀️ Назад", callback_data="routes_archive"))
+
+    if not routes:
+        text = "🕓 <b>Добавленные ранее маршруты</b>\n\nМаршрутов нет."
+    else:
+        lines = [f"🕓 <b>Последние {len(routes)} маршрутов</b>:\n"]
+        for r in routes:
+            src_title = r.source.title if r.source else None
+            src_user = r.source.username if r.source else None
+            dst_title = r.destination.title if r.destination else None
+            dst_user = r.destination.username if r.destination else None
+            src_link = _channel_link(src_title, src_user, f"src#{r.source_id}")
+            dst_link = _channel_link(dst_title, dst_user, f"dst#{r.destination_id}")
+            added = r.created_at.strftime("%d.%m.%Y") if r.created_at else "?"
+            status = "▶️" if r.is_active else "⏸"
+            lines.append(f"{status} {src_link} → {dst_link} <i>({added})</i>")
+        text = "\n".join(lines)
+
+    await callback.message.edit_text(text, reply_markup=b.as_markup(), parse_mode="HTML",
+                                     disable_web_page_preview=True)
+    await callback.answer()
+
+
 # ── STATUS ────────────────────────────────────────────────────────────────────
 
 @router.message(Command("status"))
