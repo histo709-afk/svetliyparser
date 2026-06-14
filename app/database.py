@@ -36,6 +36,7 @@ class Base(DeclarativeBase):
 async def init_db() -> None:
     """Create all tables if they don't exist yet (for dev / migration-less startup)."""
     from app.models import channel, message, route  # noqa: F401 — register models
+    from app.models import banned_word  # noqa: F401 — register BannedWord model
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

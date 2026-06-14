@@ -17,6 +17,18 @@ from app.services.forwarder import send_album, send_message
 log = structlog.get_logger(__name__)
 
 
+async def _is_banned(text: str, route_id: int) -> bool:
+    """Check if message text contains any banned word for this route."""
+    if not text:
+        return False
+    from app.repositories.banned_word_repo import BannedWordRepository
+    async with async_session_factory() as session:
+        repo = BannedWordRepository(session)
+        words = await repo.get_for_check(route_id)
+    text_lower = text.lower()
+    return any(w in text_lower for w in words)
+
+
 def _channel_link(chat_id: int, msg_id: int) -> str:
     """Build t.me/c/... link for a channel message."""
     cid = abs(chat_id)
@@ -233,6 +245,10 @@ async def _process_single_message(
             # Forward to all destinations in parallel
             async def _forward_one(route):
                 dest = route.destination
+                msg_text = message.message or message.text or ""
+                if await _is_banned(msg_text, route.id):
+                    log.info("message_banned", src=source_channel_id, msg=message.id, dest=dest.telegram_id)
+                    return
                 log.info("sending_message", src=source_channel_id, msg=message.id, dest=dest.telegram_id)
                 dest_msg_id = await send_message(
                     telethon_client, message, dest.telegram_id,
@@ -403,6 +419,10 @@ async def _process_album_poll(
 
             async def _fwd(route):
                 dest = route.destination
+                first_text = messages[0].message or messages[0].text or "" if messages else ""
+                if await _is_banned(first_text, route.id):
+                    log.info("album_banned", src=source_channel_id, group=grouped_id, dest=dest.telegram_id)
+                    return
                 dest_ids = await send_album(client, messages, dest.telegram_id)
                 if not dest_ids:
                     log.error("poll_album_failed", src=source_channel_id, dest=dest.telegram_id)

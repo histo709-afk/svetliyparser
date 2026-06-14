@@ -26,6 +26,9 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     builder.row(
         InlineKeyboardButton(text="⚠️ Последние ошибки", callback_data="logs"),
     )
+    builder.row(
+        InlineKeyboardButton(text="🚫 Запретные слова", callback_data="banned_words"),
+    )
     return builder.as_markup()
 
 
