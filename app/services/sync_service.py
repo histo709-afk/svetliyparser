@@ -329,12 +329,32 @@ _last_seen: Dict[int, int] = {}
 POLL_INTERVAL = 30  # seconds
 
 
+async def _init_last_seen(client: TelegramClient) -> None:
+    """On startup, record the latest message ID for every source channel
+    so we only forward posts that appear AFTER the bot starts."""
+    async with async_session_factory() as session:
+        repo = ChannelRepository(session)
+        sources = await repo.list_active_sources()
+
+    log.info("init_last_seen_start", count=len(sources))
+    for source in sources:
+        try:
+            msgs = await client.get_messages(source.telegram_id, limit=1)
+            if msgs:
+                _last_seen[source.telegram_id] = msgs[0].id
+            await asyncio.sleep(0.1)
+        except Exception:
+            pass
+    log.info("init_last_seen_done", channels=len(_last_seen))
+
+
 async def poll_sources(client: TelegramClient) -> None:
     """
     Periodically poll all active source channels for new messages.
     This is the primary delivery mechanism — push updates are unreliable
     for accounts subscribed to many channels.
     """
+    await _init_last_seen(client)
     log.info("poll_loop_started", interval=POLL_INTERVAL)
     while True:
         await asyncio.sleep(POLL_INTERVAL)
