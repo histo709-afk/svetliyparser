@@ -107,7 +107,7 @@ async def route_info(callback: CallbackQuery) -> None:
     )
     await callback.message.edit_text(
         text,
-        reply_markup=route_actions_keyboard(route_id, page, filter_, route.is_active),
+        reply_markup=route_actions_keyboard(route_id, page, filter_, route.is_active, getattr(route, "strip_footer", False)),
         parse_mode="HTML",
     )
     await callback.answer()
@@ -150,7 +150,7 @@ async def route_stop(callback: CallbackQuery) -> None:
     )
     await callback.message.edit_text(
         text,
-        reply_markup=route_actions_keyboard(route_id, page, filter_, route.is_active),
+        reply_markup=route_actions_keyboard(route_id, page, filter_, route.is_active, getattr(route, "strip_footer", False)),
         parse_mode="HTML",
     )
 
@@ -190,7 +190,50 @@ async def route_start(callback: CallbackQuery) -> None:
     )
     await callback.message.edit_text(
         text,
-        reply_markup=route_actions_keyboard(route_id, page, filter_, route.is_active),
+        reply_markup=route_actions_keyboard(route_id, page, filter_, route.is_active, getattr(route, "strip_footer", False)),
+        parse_mode="HTML",
+    )
+
+
+# ── TOGGLE STRIP FOOTER ───────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("route_toggle_footer:"))
+async def route_toggle_footer(callback: CallbackQuery) -> None:
+    parts = callback.data.split(":")
+    route_id = int(parts[1])
+    page = int(parts[2]) if len(parts) > 2 else 0
+    filter_ = parts[3] if len(parts) > 3 else "active"
+
+    async with async_session_factory() as session:
+        repo = RouteRepository(session)
+        new_val = await repo.toggle_strip_footer(route_id)
+        await session.commit()
+
+    if new_val is None:
+        await callback.answer("Маршрут не найден.", show_alert=True)
+        return
+
+    await callback.answer("✅ Включено" if new_val else "☑️ Выключено")
+
+    async with async_session_factory() as session:
+        repo = RouteRepository(session)
+        route = await repo.get_route_by_id(route_id)
+
+    if route is None:
+        return
+
+    status = "▶️ Запущен" if route.is_active else "⏸ Остановлен"
+    footer_status = "✅ включено" if route.strip_footer else "выключено"
+    text = (
+        f"🔀 <b>Маршрут #{route.id}</b>\n\n"
+        f"📥 <b>Источник:</b> {channel_display_name(route.source) if route.source else route.source_id}\n"
+        f"📤 <b>Назначение:</b> {channel_display_name(route.destination) if route.destination else route.destination_id}\n\n"
+        f"Статус: <b>{status}</b>\n"
+        f"Авто-удаление плашки: <b>{footer_status}</b>"
+    )
+    await callback.message.edit_text(
+        text,
+        reply_markup=route_actions_keyboard(route_id, page, filter_, route.is_active, route.strip_footer),
         parse_mode="HTML",
     )
 

@@ -103,6 +103,16 @@ class RouteRepository:
         await self.session.flush()
         return True
 
+    async def toggle_strip_footer(self, route_id: int) -> Optional[bool]:
+        """Toggle strip_footer flag. Returns new value, or None if not found."""
+        result = await self.session.execute(select(Route).where(Route.id == route_id))
+        route = result.scalar_one_or_none()
+        if route is None:
+            return None
+        route.strip_footer = not route.strip_footer
+        await self.session.flush()
+        return route.strip_footer
+
     async def delete_route(self, route_id: int) -> bool:
         """Soft delete — keeps the route in DB for archive."""
         result = await self.session.execute(
