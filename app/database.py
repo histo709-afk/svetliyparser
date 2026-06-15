@@ -40,6 +40,12 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Add deleted_at column to routes if it doesn't exist yet
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "ALTER TABLE routes ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ DEFAULT NULL"
+            )
+        )
 
 
 @asynccontextmanager
