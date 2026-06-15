@@ -343,6 +343,9 @@ async def _init_last_seen(client: TelegramClient) -> None:
             if msgs:
                 _last_seen[source.telegram_id] = msgs[0].id
             await asyncio.sleep(0.1)
+        except ValueError:
+            # Channel not accessible (not joined, banned, etc.) — skip silently
+            _last_seen[source.telegram_id] = 0
         except Exception:
             pass
     log.info("init_last_seen_done", channels=len(_last_seen))
@@ -367,6 +370,9 @@ async def poll_sources(client: TelegramClient) -> None:
                 try:
                     await _poll_one(client, source.telegram_id)
                     await asyncio.sleep(0.3)
+                except ValueError as exc:
+                    # Channel inaccessible (not joined, deleted, etc.) — log once, skip
+                    log.warning("poll_one_inaccessible", source=source.telegram_id, error=str(exc)[:120])
                 except Exception as exc:
                     log.warning("poll_one_error", source=source.telegram_id, error=str(exc)[:80])
         except Exception as exc:
