@@ -29,6 +29,19 @@ async def _is_banned(text: str, route_id: int) -> bool:
     return any(w in text_lower for w in words)
 
 
+async def _apply_replacements(text: str, route_id: int) -> str:
+    """Apply text replacement rules (global + route-specific) to message text."""
+    if not text:
+        return text
+    from app.repositories.text_replacement_repo import TextReplacementRepository
+    async with async_session_factory() as session:
+        repo = TextReplacementRepository(session)
+        rules = await repo.get_for_apply(route_id)
+    for find_text, replace_with in rules:
+        text = text.replace(find_text, replace_with)
+    return text
+
+
 def _channel_link(chat_id: int, msg_id: int) -> str:
     """Build t.me/c/... link for a channel message."""
     cid = abs(chat_id)
@@ -249,9 +262,10 @@ async def _process_single_message(
                 if await _is_banned(msg_text, route.id):
                     log.info("message_banned", src=source_channel_id, msg=message.id, dest=dest.telegram_id)
                     return
+                msg_text = await _apply_replacements(msg_text, route.id)
                 log.info("sending_message", src=source_channel_id, msg=message.id, dest=dest.telegram_id)
                 dest_msg_id = await send_message(
-                    telethon_client, message, dest.telegram_id,
+                    telethon_client, message, dest.telegram_id, override_text=msg_text,
                 )
                 if dest_msg_id is None:
                     err = f"Forward failed: src_channel={source_channel_id} src_msg={message.id} dest={dest.telegram_id}"
@@ -449,7 +463,8 @@ async def _process_album_poll(
                 if await _is_banned(first_text, route.id):
                     log.info("album_banned", src=source_channel_id, group=grouped_id, dest=dest.telegram_id)
                     return
-                dest_ids = await send_album(client, messages, dest.telegram_id)
+                first_text = await _apply_replacements(first_text, route.id)
+                dest_ids = await send_album(client, messages, dest.telegram_id, override_caption=first_text)
                 if not dest_ids:
                     log.error("poll_album_failed", src=source_channel_id, dest=dest.telegram_id)
                     return

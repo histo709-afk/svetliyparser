@@ -20,11 +20,12 @@ async def send_message(
     client,
     message,
     dest_channel_id: int,
+    override_text: Optional[str] = None,
 ) -> Optional[int]:
     """Copy a single message (text / photo / video) to dest via Bot API."""
     bot = _get_bot()
     try:
-        text = message.message or message.text or ""
+        text = override_text if override_text is not None else (message.message or message.text or "")
         media = getattr(message, "media", None)
 
         if media is None:
@@ -96,6 +97,7 @@ async def send_album(
     client,
     messages: List,
     dest_channel_id: int,
+    override_caption: Optional[str] = None,
 ) -> List[int]:
     """Copy a media group (album) to dest via Bot API send_media_group."""
     if not messages:
@@ -109,10 +111,14 @@ async def send_album(
         caption_used = False
 
         for msg in messages:
-            text = msg.message or ""
-            cap = text if not caption_used and text else None
-            if cap:
+            if not caption_used and override_caption is not None:
+                cap = override_caption if override_caption else None
                 caption_used = True
+            else:
+                text = msg.message or ""
+                cap = text if not caption_used and text else None
+                if cap:
+                    caption_used = True
 
             media = getattr(msg, "media", None)
             if media is None:
