@@ -33,11 +33,16 @@ async def start_client() -> TelegramClient:
 
     Retries on AuthKeyDuplicatedError — happens when old Railway container
     hasn't stopped yet while the new one is starting.
+    Waits up to ~15 minutes total before giving up.
     """
     global telethon_client
     print(f"SESSION_STRING_LEN={len(_session_string)} STARTS={_session_string[:10] if _session_string else 'EMPTY'}", flush=True)
 
-    for attempt in range(1, 7):
+    # Fixed 30s initial delay to let old container fully stop
+    log.info("telethon_startup_delay", seconds=30)
+    await asyncio.sleep(30)
+
+    for attempt in range(1, 20):
         try:
             if telethon_client.is_connected():
                 await telethon_client.disconnect()
@@ -49,7 +54,7 @@ async def start_client() -> TelegramClient:
                 return telethon_client
             raise RuntimeError("Telethon not authorized. Set TELEGRAM_SESSION_STRING env var.")
         except AuthKeyDuplicatedError:
-            wait = attempt * 10
+            wait = min(attempt * 15, 60)
             log.warning("auth_key_duplicated_retry", attempt=attempt, wait_seconds=wait)
             await asyncio.sleep(wait)
 
