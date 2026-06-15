@@ -38,11 +38,7 @@ async def start_client() -> TelegramClient:
     global telethon_client
     print(f"SESSION_STRING_LEN={len(_session_string)} STARTS={_session_string[:10] if _session_string else 'EMPTY'}", flush=True)
 
-    # Wait for old container to fully disconnect before attempting to connect
-    log.info("telethon_startup_delay", seconds=90)
-    await asyncio.sleep(90)
-
-    for attempt in range(1, 20):
+    for attempt in range(1, 10):
         try:
             if telethon_client.is_connected():
                 await telethon_client.disconnect()
