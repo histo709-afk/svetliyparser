@@ -18,7 +18,7 @@ from app.repositories.channel_repo import ChannelRepository
 from app.repositories.message_repo import MessageRepository
 from app.repositories.route_repo import RouteRepository
 from app.services.channel_service import channel_display_name
-from app.services.sync_service import get_last_errors
+from app.services.sync_service import get_last_errors, reset_last_seen
 
 router = Router(name="status")
 
@@ -509,3 +509,28 @@ async def cmd_remove_route(message: Message) -> None:
         await message.answer(f"✅ Маршрут #{route_id} деактивирован.")
     else:
         await message.answer(f"❌ Маршрут #{route_id} не найден.")
+
+
+@router.message(Command("resync"))
+async def cmd_resync(message: Message) -> None:
+    """Reset _last_seen for all (or specific) channels so next poll picks up recent messages.
+    Usage: /resync            — reset all channels
+           /resync @username  — reset one channel by username
+    Dedup via synced_messages prevents double-posting."""
+    parts = message.text.split(maxsplit=1) if message.text else []
+    if len(parts) > 1:
+        query = parts[1].strip().lstrip("@").lower()
+        async with async_session_factory() as session:
+            repo = ChannelRepository(session)
+            sources = await repo.list_all_sources()
+        matches = [s for s in sources if query in (s.username or "").lower() or query in (s.title or "").lower()]
+        if not matches:
+            await message.answer(f"Источник '{query}' не найден.")
+            return
+        tids = [s.telegram_id for s in matches]
+        count = reset_last_seen(tids)
+        names = ", ".join(s.title or s.username or str(s.telegram_id) for s in matches)
+        await message.answer(f"🔄 Сброшено <b>{count}</b> каналов: {names}\nСледующий цикл опроса подхватит последние посты.", parse_mode="HTML")
+    else:
+        count = reset_last_seen()
+        await message.answer(f"🔄 Сброшено <b>{count}</b> каналов. Следующий цикл опроса (через ~30 сек) подхватит последние посты.", parse_mode="HTML")

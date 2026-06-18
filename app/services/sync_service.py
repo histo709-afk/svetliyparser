@@ -368,6 +368,18 @@ _last_seen: Dict[int, int] = {}
 POLL_INTERVAL = 30  # seconds
 
 
+def reset_last_seen(telegram_ids: Optional[List[int]] = None) -> int:
+    """Reset _last_seen for given channel IDs (or all if None) to 0.
+    Next poll cycle will re-fetch recent messages; dedup prevents double-posting."""
+    if telegram_ids is None:
+        keys = list(_last_seen.keys())
+    else:
+        keys = [tid for tid in telegram_ids if tid in _last_seen]
+    for k in keys:
+        _last_seen[k] = 0
+    return len(keys)
+
+
 async def _init_last_seen(client: TelegramClient) -> None:
     """On startup, record the latest message ID for every source channel
     so we only forward posts that appear AFTER the bot starts."""
