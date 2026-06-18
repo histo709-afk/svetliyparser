@@ -378,15 +378,16 @@ async def _init_last_seen(client: TelegramClient) -> None:
     log.info("init_last_seen_start", count=len(sources))
     for source in sources:
         try:
-            msgs = await client.get_messages(source.telegram_id, limit=1)
+            try:
+                msgs = await client.get_messages(source.telegram_id, limit=1)
+            except ValueError:
+                entity = await client.get_entity(source.telegram_id)
+                msgs = await client.get_messages(entity, limit=1)
             if msgs:
                 _last_seen[source.telegram_id] = msgs[0].id
             await asyncio.sleep(0.1)
-        except ValueError:
-            # Channel not accessible (not joined, banned, etc.) — skip silently
-            _last_seen[source.telegram_id] = 0
         except Exception:
-            pass
+            _last_seen[source.telegram_id] = 0
     log.info("init_last_seen_done", channels=len(_last_seen))
 
 
@@ -422,7 +423,15 @@ async def _poll_one(client: TelegramClient, source_channel_id: int) -> None:
     """Fetch recent messages from one source channel and process any new ones."""
     last_id = _last_seen.get(source_channel_id, 0)
 
-    messages = await client.get_messages(source_channel_id, limit=5, min_id=last_id)
+    try:
+        messages = await client.get_messages(source_channel_id, limit=5, min_id=last_id)
+    except ValueError:
+        # Entity not in cache — try to force-resolve it, then retry once
+        try:
+            entity = await client.get_entity(source_channel_id)
+            messages = await client.get_messages(entity, limit=5, min_id=last_id)
+        except Exception:
+            raise ValueError(f"Could not resolve channel {source_channel_id}")
     if not messages:
         return
 
