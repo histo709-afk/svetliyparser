@@ -66,6 +66,11 @@ async def start_telethon() -> None:
     log.info("starting_telethon_client")
     client = await start_client()
     log.info("telethon_authenticated")
+    # Sync all joined channels into Telethon's entity cache so get_messages() works
+    log.info("syncing_dialogs")
+    async for _ in client.iter_dialogs():
+        pass
+    log.info("dialogs_synced")
     # Fix all stale telegram_ids using dialog entity cache (no flood limits)
     await fix_all_stale_ids(client)
     # run_listener, poll_sources, and run_until_disconnected run concurrently
