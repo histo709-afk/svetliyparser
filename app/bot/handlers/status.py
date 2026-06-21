@@ -534,3 +534,38 @@ async def cmd_resync(message: Message) -> None:
     else:
         count = reset_last_seen()
         await message.answer(f"🔄 Сброшено <b>{count}</b> каналов. Следующий цикл опроса (через ~30 сек) подхватит последние посты.", parse_mode="HTML")
+
+
+@router.message(Command("getids"))
+async def cmd_getids(message: Message) -> None:
+    """Lookup telegram_ids for channels by username.
+    Usage: /getids username1 username2 ...
+    Also searches destination channels."""
+    parts = message.text.split() if message.text else []
+    if len(parts) < 2:
+        await message.answer("Использование: /getids username1 username2 ...\nПример: /getids chelny almet_light lightkazan")
+        return
+
+    usernames = [p.lstrip("@").lower() for p in parts[1:]]
+
+    async with async_session_factory() as session:
+        repo = ChannelRepository(session)
+        sources = await repo.list_all_sources()
+        dests = await repo.list_all_destinations()
+
+    all_channels = [(s.username, s.title, s.telegram_id, "src") for s in sources] + \
+                   [(d.username, d.title, d.telegram_id, "dst") for d in dests]
+
+    lines = []
+    not_found = []
+    for uname in usernames:
+        match = next((c for c in all_channels if (c[0] or "").lower() == uname), None)
+        if match:
+            lines.append(f"<b>{match[1] or match[0]}</b>\n@{match[0]}\n<code>{match[2]}</code>")
+        else:
+            not_found.append(uname)
+
+    if lines:
+        await message.answer("\n\n".join(lines), parse_mode="HTML")
+    if not_found:
+        await message.answer(f"Не найдены в БД: {', '.join(not_found)}")
