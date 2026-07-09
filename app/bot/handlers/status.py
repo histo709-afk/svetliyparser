@@ -534,3 +534,52 @@ async def cmd_resync(message: Message) -> None:
     else:
         count = reset_last_seen()
         await message.answer(f"🔄 Сброшено <b>{count}</b> каналов. Следующий цикл опроса (через ~30 сек) подхватит последние посты.", parse_mode="HTML")
+
+
+@router.message(Command("joinall"))
+async def cmd_joinall(message: Message) -> None:
+    """Make the userbot account join every active source channel that has a
+    username. Fixes 'Could not resolve channel' for channels the account
+    was never subscribed to. Optional filter: /joinall лениногорск"""
+    import asyncio
+    from app.telethon_client.client import telethon_client
+    from app.services.channel_service import join_channel_link
+
+    parts = message.text.split(maxsplit=1) if message.text else []
+    query = parts[1].strip().lstrip("@").lower() if len(parts) > 1 else None
+
+    async with async_session_factory() as session:
+        repo = ChannelRepository(session)
+        sources = await repo.list_active_sources()
+
+    targets = [s for s in sources if s.username]
+    if query:
+        targets = [s for s in targets if query in (s.username or "").lower() or query in (s.title or "").lower()]
+
+    if not targets:
+        await message.answer("Нет источников с username для вступления.")
+        return
+
+    await message.answer(f"🔗 Вступаю в <b>{len(targets)}</b> каналов, это займёт несколько минут...", parse_mode="HTML")
+
+    joined = 0
+    failed = 0
+    for s in targets:
+        try:
+            ok = await join_channel_link(telethon_client, f"@{s.username}")
+            if ok:
+                joined += 1
+            else:
+                failed += 1
+        except Exception:
+            failed += 1
+        await asyncio.sleep(1.5)
+
+    # Reset cursors so the next poll picks up recent posts from newly joined channels
+    reset_last_seen()
+
+    await message.answer(
+        f"✅ Готово!\n• Вступил/уже состоит: <b>{joined}</b>\n• Ошибок: <b>{failed}</b>\n\n"
+        f"Курсоры сброшены — посты пойдут в течение ~1 минуты.",
+        parse_mode="HTML",
+    )
