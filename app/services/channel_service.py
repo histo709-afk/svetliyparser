@@ -220,6 +220,71 @@ async def create_route(
     return route, True
 
 
+async def join_channel_link(client: TelegramClient, link: str) -> bool:
+    """Make the userbot account join a channel (public @username or private +invite).
+    Returns True if joined or already a member, False on failure.
+    Safe to call repeatedly — already-member is treated as success."""
+    from telethon.tl.functions.channels import JoinChannelRequest
+    from telethon.tl.functions.messages import ImportChatInviteRequest
+    from telethon.errors import (
+        UserAlreadyParticipantError,
+        InviteHashExpiredError,
+        InviteHashInvalidError,
+        FloodWaitError,
+    )
+
+    identifier = parse_channel_link(link)
+    if not identifier:
+        return False
+
+    # Private invite link (+hash)
+    if identifier.startswith("+"):
+        invite_hash = identifier[1:]
+        try:
+            await client(ImportChatInviteRequest(invite_hash))
+            return True
+        except UserAlreadyParticipantError:
+            return True
+        except FloodWaitError as e:
+            log.warning("join_flood_wait", link=link, seconds=e.seconds)
+            await asyncio.sleep(min(e.seconds, 60))
+            try:
+                await client(ImportChatInviteRequest(invite_hash))
+                return True
+            except UserAlreadyParticipantError:
+                return True
+            except Exception as exc:
+                log.warning("join_invite_failed_retry", hash=invite_hash, error=str(exc)[:80])
+                return False
+        except (InviteHashExpiredError, InviteHashInvalidError) as exc:
+            log.warning("join_invite_bad_hash", hash=invite_hash, error=str(exc)[:80])
+            return False
+        except Exception as exc:
+            log.warning("join_invite_failed", hash=invite_hash, error=str(exc)[:80])
+            return False
+
+    # Public channel (@username)
+    try:
+        await client(JoinChannelRequest(identifier))
+        return True
+    except UserAlreadyParticipantError:
+        return True
+    except FloodWaitError as e:
+        log.warning("join_flood_wait", link=link, seconds=e.seconds)
+        await asyncio.sleep(min(e.seconds, 60))
+        try:
+            await client(JoinChannelRequest(identifier))
+            return True
+        except UserAlreadyParticipantError:
+            return True
+        except Exception as exc:
+            log.warning("join_public_failed_retry", identifier=identifier, error=str(exc)[:80])
+            return False
+    except Exception as exc:
+        log.warning("join_public_failed", identifier=identifier, error=str(exc)[:80])
+        return False
+
+
 def channel_display_name(ch: SourceChannel | DestinationChannel) -> str:
     if ch.username:
         return f"@{ch.username} ({ch.title or 'без названия'})"

@@ -9,7 +9,8 @@ from aiogram.types import Message, Document
 from app.bot.keyboards import back_to_menu_keyboard
 from app.database import async_session_factory
 from app.services.channel_service import (
-    add_source_channel, add_destination_channel, create_route, resolve_channel
+    add_source_channel, add_destination_channel, create_route, resolve_channel,
+    join_channel_link,
 )
 
 router = Router(name="import")
@@ -48,14 +49,27 @@ async def handle_excel_import(message: Message) -> None:
         await message.answer(f"❌ Ошибка чтения файла: {e}")
         return
 
-    if len(rows) < 2:
+    if len(rows) < 1:
+        await message.answer("❌ Файл пустой.")
+        return
+
+    # Detect whether the first row is a header or actual data.
+    # If the first row already contains a t.me/http link, treat all rows as data.
+    def _looks_like_data(row) -> bool:
+        if not row:
+            return False
+        joined = " ".join(str(c) for c in row if c)
+        return "t.me/" in joined or "http" in joined
+
+    data_rows = rows if _looks_like_data(rows[0]) else rows[1:]
+    if not data_rows:
         await message.answer("❌ Файл пустой или содержит только заголовки.")
         return
 
-    data_rows = rows[1:]
     client = _get_telethon_client()
 
-    # Pre-resolve all unique destination links once to avoid rate limits
+    # Pre-resolve all unique destination links once to avoid rate limits.
+    # First JOIN each destination (needed for private invite links to resolve).
     unique_dest_links = set()
     for row in data_rows:
         if row and len(row) >= 3 and row[2]:
@@ -65,6 +79,8 @@ async def handle_excel_import(message: Message) -> None:
     dest_errors: dict[str, str] = {}
     for link in unique_dest_links:
         try:
+            await join_channel_link(client, link)
+            await asyncio.sleep(1)
             info = await resolve_channel(client, link)
             if info:
                 dest_cache[link] = info
@@ -96,6 +112,9 @@ async def handle_excel_import(message: Message) -> None:
             continue
 
         try:
+            # Join the source channel so the userbot can actually read its posts
+            await join_channel_link(client, source_link)
+            await asyncio.sleep(1)
             async with async_session_factory() as session:
                 src, _ = await add_source_channel(session, client, source_link)
                 dst, _ = await add_destination_channel(session, client, dest_link)
