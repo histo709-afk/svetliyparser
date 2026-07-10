@@ -583,3 +583,60 @@ async def cmd_joinall(message: Message) -> None:
         f"Курсоры сброшены — посты пойдут в течение ~1 минуты.",
         parse_mode="HTML",
     )
+
+
+@router.message(Command("addquick"))
+async def cmd_addquick(message: Message) -> None:
+    """One-shot setup: join source, add source+dest, create route,
+    enable strip_footer, reset cursor.
+    Usage: /addquick <source_link> <dest_id_or_link> [nofooter]
+    Example: /addquick https://t.me/gdebenzkzn -1004489362200
+             /addquick https://t.me/gdebenzkzn -1004489362200 nofooter
+    (footer stripping is ON by default; pass "nofooter" to skip it)"""
+    from app.telethon_client.client import telethon_client
+    from app.services.channel_service import (
+        join_channel_link, add_source_channel, add_destination_channel, create_route,
+    )
+
+    parts = message.text.split() if message.text else []
+    if len(parts) < 3:
+        await message.answer(
+            "Использование:\n<code>/addquick ссылка_источник ID_или_ссылка_назначение [nofooter]</code>\n\n"
+            "Пример:\n<code>/addquick https://t.me/gdebenzkzn -1004489362200</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    source_link = parts[1]
+    dest_link = parts[2]
+    strip_footer = "nofooter" not in [p.lower() for p in parts[3:]]
+
+    client = telethon_client
+    steps = []
+
+    joined = await join_channel_link(client, source_link)
+    steps.append(f"{'✅' if joined else '⚠️'} Вступление в источник")
+
+    try:
+        async with async_session_factory() as session:
+            src, src_created = await add_source_channel(session, client, source_link)
+            dst, dst_created = await add_destination_channel(session, client, dest_link)
+            route, route_created = await create_route(session, src.id, dst.id)
+            if strip_footer and not route.strip_footer:
+                route.strip_footer = True
+            await session.commit()
+            route_id = route.id
+            final_strip_footer = route.strip_footer
+    except Exception as e:
+        await message.answer(f"❌ Ошибка: {e}\n\n" + "\n".join(steps))
+        return
+
+    steps.append(f"✅ Источник: {'добавлен' if src_created else 'уже был'} (id={src.id})")
+    steps.append(f"✅ Назначение: {'добавлено' if dst_created else 'уже было'} (id={dst.id})")
+    steps.append(f"✅ Маршрут: {'создан' if route_created else 'уже существовал'} (#{route_id})")
+    steps.append(f"{'✅' if final_strip_footer else '☑️'} Авто-удаление плашки: {'включено' if final_strip_footer else 'выключено'}")
+
+    reset_last_seen([src.telegram_id])
+    steps.append("🔄 Курсор сброшен — посты пойдут в течение ~1 минуты")
+
+    await message.answer("<b>Готово!</b>\n\n" + "\n".join(steps), parse_mode="HTML")
