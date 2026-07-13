@@ -52,6 +52,37 @@ def _strip_footer(text: str) -> str:
     return text
 
 
+_DASH_CHARS = "-‐‑‒–—―"
+
+
+def _normalize_for_match(s: str) -> str:
+    """Strip emoji variation selectors and normalize NBSP so minor copy-paste
+    differences don't break exact-substring matching."""
+    return s.replace("️", "").replace("\xa0", " ")
+
+
+def _flexible_pattern(find_text: str) -> "_re.Pattern | None":
+    """Build a regex that tolerates whitespace-run and dash-style differences
+    between the saved rule and the actual message text."""
+    norm = _normalize_for_match(find_text).strip()
+    if not norm:
+        return None
+    tokens = [t for t in _re.split(r"\s+", norm) if t]
+    if not tokens:
+        return None
+    escaped_tokens = []
+    for t in tokens:
+        e = _re.escape(t)
+        # allow any dash variant where the rule used a plain hyphen
+        e = e.replace(_re.escape("-"), f"[{_re.escape(_DASH_CHARS)}]")
+        escaped_tokens.append(e)
+    pattern_str = r"\s+".join(escaped_tokens)
+    try:
+        return _re.compile(pattern_str)
+    except _re.error:
+        return None
+
+
 async def _apply_replacements(text: str, route_id: int) -> str:
     """Apply text replacement rules (global + route-specific) to message text."""
     if not text:
@@ -60,8 +91,18 @@ async def _apply_replacements(text: str, route_id: int) -> str:
     async with async_session_factory() as session:
         repo = TextReplacementRepository(session)
         rules = await repo.get_for_apply(route_id)
+
+    text = _normalize_for_match(text)
     for find_text, replace_with in rules:
-        text = text.replace(find_text, replace_with)
+        if not find_text:
+            continue
+        find_norm = _normalize_for_match(find_text)
+        if find_norm in text:
+            text = text.replace(find_norm, replace_with)
+            continue
+        pattern = _flexible_pattern(find_text)
+        if pattern is not None:
+            text = pattern.sub(lambda m, r=replace_with: r, text)
     return text
 
 
