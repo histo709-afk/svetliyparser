@@ -32,24 +32,33 @@ async def _is_banned(text: str, route_id: int) -> bool:
 import re as _re
 
 _URL_RE = _re.compile(r'https?://\S+|t\.me/\S+|@\w{3,}')
+# Matches per-post author signatures like "Кирилл · 6 мин назад" or
+# "Азалия · только что" — a short name/label, a "·" separator, then a
+# relative-time phrase. Generic enough to not need per-name rules.
+_SIGNATURE_RE = _re.compile(
+    r'^.{1,40}·.{0,20}(назад|только\s*что)\s*$', _re.IGNORECASE
+)
+
+
+def _is_footer_paragraph(p: str) -> bool:
+    return bool(_URL_RE.search(p) or _SIGNATURE_RE.search(p))
 
 
 def _strip_footer(text: str) -> str:
-    """Remove the last paragraph if it contains a URL or @mention (ad signature)."""
+    """Remove trailing paragraph(s) that look like an ad signature (URL/@mention)
+    or a per-post author signature (Name · N мин назад)."""
     if not text:
         return text
     paragraphs = text.split("\n\n")
     if len(paragraphs) <= 1:
         # Try splitting by single newline as last resort
         lines = text.split("\n")
-        if len(lines) > 1 and _URL_RE.search(lines[-1]):
-            return "\n".join(lines[:-1]).rstrip()
-        return text
-    last = paragraphs[-1].strip()
-    if _URL_RE.search(last):
-        result = "\n\n".join(paragraphs[:-1]).rstrip()
-        return result
-    return text
+        while len(lines) > 1 and _is_footer_paragraph(lines[-1].strip()):
+            lines = lines[:-1]
+        return "\n".join(lines).rstrip()
+    while len(paragraphs) > 1 and _is_footer_paragraph(paragraphs[-1].strip()):
+        paragraphs = paragraphs[:-1]
+    return "\n\n".join(paragraphs).rstrip()
 
 
 _DASH_CHARS = "-‐‑‒–—―"
