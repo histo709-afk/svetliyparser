@@ -53,15 +53,25 @@ async def handle_excel_import(message: Message) -> None:
         await message.answer("❌ Файл пустой.")
         return
 
-    # Detect whether the first row is a header or actual data.
-    # If the first row already contains a t.me/http link, treat all rows as data.
-    def _looks_like_data(row) -> bool:
+    # Extract (source_link, dest_link) as the LAST two non-empty cells in each
+    # row — tolerates leading blank columns and varying column counts.
+    def _extract_links(row):
         if not row:
+            return None
+        cells = [str(c).strip() for c in row if c not in (None, "")]
+        if len(cells) < 2:
+            return None
+        return cells[-2], cells[-1]
+
+    def _looks_like_data(row) -> bool:
+        pair = _extract_links(row)
+        if not pair:
             return False
-        joined = " ".join(str(c) for c in row if c)
+        joined = " ".join(pair)
         return "t.me/" in joined or "http" in joined
 
-    data_rows = rows if _looks_like_data(rows[0]) else rows[1:]
+    raw_rows = rows if _looks_like_data(rows[0]) else rows[1:]
+    data_rows = [pair for pair in (_extract_links(r) for r in raw_rows) if pair]
     if not data_rows:
         await message.answer("❌ Файл пустой или содержит только заголовки.")
         return
@@ -70,10 +80,7 @@ async def handle_excel_import(message: Message) -> None:
 
     # Pre-resolve all unique destination links once to avoid rate limits.
     # First JOIN each destination (needed for private invite links to resolve).
-    unique_dest_links = set()
-    for row in data_rows:
-        if row and len(row) >= 3 and row[2]:
-            unique_dest_links.add(str(row[2]).strip())
+    unique_dest_links = {dest for _, dest in data_rows}
 
     dest_cache: dict[str, object] = {}
     dest_errors: dict[str, str] = {}
@@ -94,16 +101,7 @@ async def handle_excel_import(message: Message) -> None:
     skipped = 0
     errors = []
 
-    for i, row in enumerate(data_rows, start=2):
-        if not row or len(row) < 3:
-            continue
-        _, source_link, dest_link = row[0], row[1], row[2]
-        if not source_link or not dest_link:
-            continue
-
-        source_link = str(source_link).strip()
-        dest_link = str(dest_link).strip()
-
+    for i, (source_link, dest_link) in enumerate(data_rows, start=2):
         if dest_link in dest_errors:
             errors.append(f"Строка {i}: {source_link} → {dest_errors[dest_link][:60]}")
             if len(errors) >= 10:
