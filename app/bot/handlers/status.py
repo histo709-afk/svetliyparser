@@ -113,6 +113,59 @@ async def route_info(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+@router.message(Command("route"))
+async def cmd_open_route(message: Message) -> None:
+    """Open a route's settings menu directly.
+    Usage: /route <ID>                — open by numeric route ID
+           /route <часть названия>    — search by source/destination name/username"""
+    parts = message.text.split(maxsplit=1) if message.text else []
+    if len(parts) < 2:
+        await message.answer("Использование:\n<code>/route ID</code> или <code>/route часть_названия</code>", parse_mode="HTML")
+        return
+
+    query = parts[1].strip()
+
+    async with async_session_factory() as session:
+        repo = RouteRepository(session)
+        if query.isdigit():
+            route = await repo.get_route_by_id(int(query))
+            matches = [route] if route else []
+        else:
+            routes = await repo.list_all_routes()
+            q = query.lower().lstrip("@")
+            matches = [
+                r for r in routes
+                if (r.source and q in (channel_display_name(r.source)).lower())
+                or (r.destination and q in (channel_display_name(r.destination)).lower())
+            ]
+
+    if not matches:
+        await message.answer(f"Маршрут по запросу «{query}» не найден.")
+        return
+
+    if len(matches) > 1:
+        lines = ["Найдено несколько маршрутов, уточни ID:\n"]
+        for r in matches[:15]:
+            lines.append(f"#{r.id}: {_route_label(r)}")
+        await message.answer("\n".join(lines))
+        return
+
+    route = matches[0]
+    status = "▶️ Запущен" if route.is_active else "⏸ Остановлен"
+    text = (
+        f"🔀 <b>Маршрут #{route.id}</b>\n\n"
+        f"📥 <b>Источник:</b> {channel_display_name(route.source) if route.source else route.source_id}\n"
+        f"📤 <b>Назначение:</b> {channel_display_name(route.destination) if route.destination else route.destination_id}\n\n"
+        f"Статус: <b>{status}</b>"
+    )
+    filter_ = "active" if route.is_active else "stopped"
+    await message.answer(
+        text,
+        reply_markup=route_actions_keyboard(route.id, 0, filter_, route.is_active, getattr(route, "strip_footer", False), getattr(route, "media_only", False)),
+        parse_mode="HTML",
+    )
+
+
 # ── STOP / START ──────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("route_stop:"))
