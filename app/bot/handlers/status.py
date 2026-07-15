@@ -4,12 +4,14 @@ from __future__ import annotations
 from aiogram import F, Router
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from app.bot.keyboards import (
     back_to_menu_keyboard,
     confirm_delete_route_keyboard,
     route_actions_keyboard,
+    route_search_results_keyboard,
     routes_filter_keyboard,
     routes_list_keyboard,
 )
@@ -40,6 +42,58 @@ async def show_routes(event: Message | CallbackQuery, state: FSMContext) -> None
         await event.answer()
     else:
         await event.answer(text, reply_markup=routes_filter_keyboard(), parse_mode="HTML")
+
+
+# ── SEARCH ────────────────────────────────────────────────────────────────────
+
+class RouteSearchStates(StatesGroup):
+    waiting_query = State()
+
+
+@router.callback_query(F.data == "routes_search")
+async def routes_search_prompt(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(RouteSearchStates.waiting_query)
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from aiogram.types import InlineKeyboardButton
+    b = InlineKeyboardBuilder()
+    b.row(InlineKeyboardButton(text="◀️ Назад", callback_data="routes"))
+    await callback.message.edit_text(
+        "🔍 <b>Поиск маршрута</b>\n\n"
+        "Напишите название города, района или канала (источника или назначения):",
+        reply_markup=b.as_markup(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(RouteSearchStates.waiting_query)
+async def routes_search_result(message: Message, state: FSMContext) -> None:
+    query = (message.text or "").strip().lower().lstrip("@")
+    await state.clear()
+
+    if len(query) < 2:
+        await message.answer("Слишком короткий запрос, попробуй снова через «🔍 Поиск».")
+        return
+
+    async with async_session_factory() as session:
+        repo = RouteRepository(session)
+        routes = await repo.list_all_routes()
+
+    matches = [
+        r for r in routes
+        if (r.source and query in channel_display_name(r.source).lower())
+        or (r.destination and query in channel_display_name(r.destination).lower())
+    ]
+
+    if not matches:
+        b_builder = routes_filter_keyboard()
+        await message.answer(f"По запросу «{message.text.strip()}» маршрутов не найдено.", reply_markup=b_builder)
+        return
+
+    total = len(matches)
+    shown = matches[:30]
+    text = f"🔍 <b>Найдено маршрутов: {total}</b>" + (f" (показаны первые {len(shown)})" if total > len(shown) else "")
+    await message.answer(text, reply_markup=route_search_results_keyboard(shown), parse_mode="HTML")
 
 
 # ── FILTERED LIST ─────────────────────────────────────────────────────────────

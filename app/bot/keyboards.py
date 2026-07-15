@@ -40,8 +40,29 @@ def routes_filter_keyboard() -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="▶️ Запущенные", callback_data="routes_filter:active:0"),
         InlineKeyboardButton(text="⏸ Остановленные", callback_data="routes_filter:stopped:0"),
     )
+    builder.row(InlineKeyboardButton(text="🔍 Поиск", callback_data="routes_search"))
     builder.row(InlineKeyboardButton(text="🗄 Архив", callback_data="routes_archive"))
     builder.row(InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu"))
+    return builder.as_markup()
+
+
+def route_search_results_keyboard(routes: list) -> InlineKeyboardMarkup:
+    """List of matching routes as buttons, each opening its settings page."""
+    builder = InlineKeyboardBuilder()
+    for r in routes:
+        src_name = (channel_display_name(r.source) if r.source else f"src#{r.source_id}")[:25]
+        dst_name = (channel_display_name(r.destination) if r.destination else f"dst#{r.destination_id}")[:25]
+        status_icon = "✅" if r.is_active else "⏸"
+        filter_ = "active" if r.is_active else "stopped"
+        label = f"{status_icon} {src_name} → {dst_name}"
+        builder.row(
+            InlineKeyboardButton(
+                text=label[:60],
+                callback_data=f"route_info:{r.id}:0:{filter_}",
+            )
+        )
+    builder.row(InlineKeyboardButton(text="🔍 Искать снова", callback_data="routes_search"))
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="routes"))
     return builder.as_markup()
 
 
