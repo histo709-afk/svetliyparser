@@ -91,7 +91,9 @@ async def routes_search_result(message: Message, state: FSMContext) -> None:
         return
 
     total = len(matches)
-    shown = matches[:30]
+    # Telegram caps inline keyboards at 100 buttons; stay well under that.
+    SAFETY_CAP = 90
+    shown = matches[:SAFETY_CAP]
     text = f"🔍 <b>Найдено маршрутов: {total}</b>" + (f" (показаны первые {len(shown)})" if total > len(shown) else "")
     await message.answer(text, reply_markup=route_search_results_keyboard(shown), parse_mode="HTML")
 
