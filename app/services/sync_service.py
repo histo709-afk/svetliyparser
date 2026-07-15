@@ -57,8 +57,16 @@ def _strip_footer(text: str) -> str:
     if len(paragraphs) <= 1:
         # Try splitting by single newline as last resort
         lines = text.split("\n")
-        while len(lines) > 1 and _is_footer_paragraph(lines[-1].strip()):
+        while len(lines) > 1:
+            last = lines[-1].strip()
+            if not _is_footer_paragraph(last):
+                break
             lines = lines[:-1]
+            # A bare "(Реклама)" disclosure marker is always attached to the
+            # ad's own text on the line right above it — drop that too, since
+            # otherwise only the marker gets removed and the ad text stays.
+            if _AD_MARKER_RE.fullmatch(last) and len(lines) > 1:
+                lines = lines[:-1]
         return "\n".join(lines).rstrip()
     while len(paragraphs) > 1 and _is_footer_paragraph(paragraphs[-1].strip()):
         paragraphs = paragraphs[:-1]
