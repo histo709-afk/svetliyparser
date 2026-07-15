@@ -640,3 +640,46 @@ async def cmd_addquick(message: Message) -> None:
     steps.append("🔄 Курсор сброшен — посты пойдут в течение ~1 минуты")
 
     await message.answer("<b>Готово!</b>\n\n" + "\n".join(steps), parse_mode="HTML")
+
+
+@router.message(Command("renamedest"))
+async def cmd_renamedest(message: Message) -> None:
+    """Rename a destination channel's display title in the DB.
+    Usage: /renamedest <telegram_id> <новое название>
+    Example: /renamedest -1004348793477 Парсер Башкортостан"""
+    from sqlalchemy import select
+    from app.models.channel import DestinationChannel
+
+    parts = message.text.split(maxsplit=2) if message.text else []
+    if len(parts) < 3:
+        await message.answer(
+            "Использование:\n<code>/renamedest ID новое_название</code>\n\n"
+            "Пример:\n<code>/renamedest -1004348793477 Парсер Башкортостан</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    try:
+        telegram_id = int(parts[1])
+    except ValueError:
+        await message.answer("⚠️ ID канала должен быть числом (например -1004348793477).")
+        return
+
+    new_title = parts[2].strip()
+
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(DestinationChannel).where(DestinationChannel.telegram_id == telegram_id)
+        )
+        dest = result.scalar_one_or_none()
+        if dest is None:
+            await message.answer(f"❌ Назначение с ID <code>{telegram_id}</code> не найдено.", parse_mode="HTML")
+            return
+        old_title = dest.title
+        dest.title = new_title
+        await session.commit()
+
+    await message.answer(
+        f"✅ Переименовано!\n\n<code>{telegram_id}</code>\n«{old_title or '(без названия)'}» → «{new_title}»",
+        parse_mode="HTML",
+    )
