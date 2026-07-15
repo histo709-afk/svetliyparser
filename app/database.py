@@ -52,6 +52,11 @@ async def init_db() -> None:
                 "ALTER TABLE routes ADD COLUMN IF NOT EXISTS strip_footer BOOLEAN NOT NULL DEFAULT FALSE"
             )
         )
+        await conn.execute(
+            __import__("sqlalchemy").text(
+                "ALTER TABLE routes ADD COLUMN IF NOT EXISTS media_only BOOLEAN NOT NULL DEFAULT FALSE"
+            )
+        )
 
 
 @asynccontextmanager

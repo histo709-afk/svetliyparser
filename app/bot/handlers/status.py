@@ -107,7 +107,7 @@ async def route_info(callback: CallbackQuery) -> None:
     )
     await callback.message.edit_text(
         text,
-        reply_markup=route_actions_keyboard(route_id, page, filter_, route.is_active, getattr(route, "strip_footer", False)),
+        reply_markup=route_actions_keyboard(route_id, page, filter_, route.is_active, getattr(route, "strip_footer", False), getattr(route, "media_only", False)),
         parse_mode="HTML",
     )
     await callback.answer()
@@ -150,7 +150,7 @@ async def route_stop(callback: CallbackQuery) -> None:
     )
     await callback.message.edit_text(
         text,
-        reply_markup=route_actions_keyboard(route_id, page, filter_, route.is_active, getattr(route, "strip_footer", False)),
+        reply_markup=route_actions_keyboard(route_id, page, filter_, route.is_active, getattr(route, "strip_footer", False), getattr(route, "media_only", False)),
         parse_mode="HTML",
     )
 
@@ -190,7 +190,7 @@ async def route_start(callback: CallbackQuery) -> None:
     )
     await callback.message.edit_text(
         text,
-        reply_markup=route_actions_keyboard(route_id, page, filter_, route.is_active, getattr(route, "strip_footer", False)),
+        reply_markup=route_actions_keyboard(route_id, page, filter_, route.is_active, getattr(route, "strip_footer", False), getattr(route, "media_only", False)),
         parse_mode="HTML",
     )
 
@@ -233,7 +233,50 @@ async def route_toggle_footer(callback: CallbackQuery) -> None:
     )
     await callback.message.edit_text(
         text,
-        reply_markup=route_actions_keyboard(route_id, page, filter_, route.is_active, route.strip_footer),
+        reply_markup=route_actions_keyboard(route_id, page, filter_, route.is_active, route.strip_footer, route.media_only),
+        parse_mode="HTML",
+    )
+
+
+# ── TOGGLE MEDIA ONLY ─────────────────────────────────────────────────────────
+
+@router.callback_query(F.data.startswith("route_toggle_media_only:"))
+async def route_toggle_media_only(callback: CallbackQuery) -> None:
+    parts = callback.data.split(":")
+    route_id = int(parts[1])
+    page = int(parts[2]) if len(parts) > 2 else 0
+    filter_ = parts[3] if len(parts) > 3 else "active"
+
+    async with async_session_factory() as session:
+        repo = RouteRepository(session)
+        new_val = await repo.toggle_media_only(route_id)
+        await session.commit()
+
+    if new_val is None:
+        await callback.answer("Маршрут не найден.", show_alert=True)
+        return
+
+    await callback.answer("✅ Включено" if new_val else "☑️ Выключено")
+
+    async with async_session_factory() as session:
+        repo = RouteRepository(session)
+        route = await repo.get_route_by_id(route_id)
+
+    if route is None:
+        return
+
+    status = "▶️ Запущен" if route.is_active else "⏸ Остановлен"
+    media_status = "✅ включено" if route.media_only else "выключено"
+    text = (
+        f"🔀 <b>Маршрут #{route.id}</b>\n\n"
+        f"📥 <b>Источник:</b> {channel_display_name(route.source) if route.source else route.source_id}\n"
+        f"📤 <b>Назначение:</b> {channel_display_name(route.destination) if route.destination else route.destination_id}\n\n"
+        f"Статус: <b>{status}</b>\n"
+        f"Только посты с фото/видео: <b>{media_status}</b>"
+    )
+    await callback.message.edit_text(
+        text,
+        reply_markup=route_actions_keyboard(route_id, page, filter_, route.is_active, route.strip_footer, route.media_only),
         parse_mode="HTML",
     )
 

@@ -28,6 +28,7 @@ class Route(Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     strip_footer: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    media_only: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, nullable=False
     )

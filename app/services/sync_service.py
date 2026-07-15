@@ -331,6 +331,9 @@ async def _process_single_message(
             # Forward to all destinations in parallel
             async def _forward_one(route):
                 dest = route.destination
+                if getattr(route, "media_only", False) and getattr(message, "media", None) is None:
+                    log.info("message_skipped_no_media", src=source_channel_id, msg=message.id, dest=dest.telegram_id)
+                    return
                 msg_text = message.message or message.text or ""
                 if await _is_banned(msg_text, route.id):
                     log.info("message_banned", src=source_channel_id, msg=message.id, dest=dest.telegram_id)

@@ -113,6 +113,16 @@ class RouteRepository:
         await self.session.flush()
         return route.strip_footer
 
+    async def toggle_media_only(self, route_id: int) -> Optional[bool]:
+        """Toggle media_only flag. Returns new value, or None if not found."""
+        result = await self.session.execute(select(Route).where(Route.id == route_id))
+        route = result.scalar_one_or_none()
+        if route is None:
+            return None
+        route.media_only = not route.media_only
+        await self.session.flush()
+        return route.media_only
+
     async def delete_route(self, route_id: int) -> bool:
         """Soft delete — keeps the route in DB for archive."""
         result = await self.session.execute(

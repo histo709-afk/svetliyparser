@@ -76,7 +76,7 @@ def routes_list_keyboard(routes: list, page: int = 0, filter_: str = "active") -
     return builder.as_markup()
 
 
-def route_actions_keyboard(route_id: int, page: int, filter_: str, is_active: bool, strip_footer: bool = False) -> InlineKeyboardMarkup:
+def route_actions_keyboard(route_id: int, page: int, filter_: str, is_active: bool, strip_footer: bool = False, media_only: bool = False) -> InlineKeyboardMarkup:
     """Per-route settings menu."""
     builder = InlineKeyboardBuilder()
     if is_active:
@@ -85,6 +85,8 @@ def route_actions_keyboard(route_id: int, page: int, filter_: str, is_active: bo
         builder.row(InlineKeyboardButton(text="▶️ Запустить маршрут", callback_data=f"route_start:{route_id}:{page}:{filter_}"))
     footer_icon = "✅" if strip_footer else "☑️"
     builder.row(InlineKeyboardButton(text=f"{footer_icon} Авто-удаление плашки", callback_data=f"route_toggle_footer:{route_id}:{page}:{filter_}"))
+    media_icon = "✅" if media_only else "☑️"
+    builder.row(InlineKeyboardButton(text=f"{media_icon} Только посты с фото/видео", callback_data=f"route_toggle_media_only:{route_id}:{page}:{filter_}"))
     builder.row(InlineKeyboardButton(text="🚫 Запретные слова", callback_data=f"bw_select_route:{route_id}"))
     builder.row(InlineKeyboardButton(text="✂️ Замена текста", callback_data=f"tr_select_route:{route_id}"))
     builder.row(InlineKeyboardButton(text="🗑 Удалить маршрут", callback_data=f"delete_route:{route_id}:{page}:{filter_}"))
