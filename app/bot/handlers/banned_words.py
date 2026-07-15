@@ -18,6 +18,7 @@ class BannedWordsStates(StatesGroup):
     adding_global = State()
     selecting_route = State()
     adding_route_words = State()
+    adding_route_exception = State()
     searching = State()
 
 
@@ -221,15 +222,18 @@ async def _show_route_words(message: Message, route_id: int, edit: bool = False)
 
     builder = InlineKeyboardBuilder()
     builder.row(InlineKeyboardButton(text="➕ Добавить слова", callback_data=f"bw_add_route:{route_id}"))
+    builder.row(InlineKeyboardButton(text="🟢 Исключение (разрешить глобальное слово)", callback_data=f"bw_add_exception:{route_id}"))
     for w in words:
+        icon = "🟢" if w.is_exception else "❌"
         builder.row(InlineKeyboardButton(
-            text=f"❌ {w.word}", callback_data=f"bw_del:{w.id}:route:{route_id}"
+            text=f"{icon} {w.word}", callback_data=f"bw_del:{w.id}:route:{route_id}"
         ))
     builder.row(InlineKeyboardButton(text="◀️ К маршрутам", callback_data="bw_per_route"))
 
     text = (
         f"🎯 <b>Запрет для маршрута:</b>\n{src} → {dst}\n\n"
-        f"Слов: <b>{len(words)}</b>"
+        f"Слов: <b>{len(words)}</b>\n\n"
+        f"🟢 — исключение: слово запрещено глобально, но <b>разрешено</b> для этого маршрута"
     )
     if edit:
         await message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
@@ -303,6 +307,73 @@ async def process_add_route_words(message: Message, state: FSMContext) -> None:
         await message.answer(result_text, reply_markup=builder.as_markup(), parse_mode="HTML")
 
 
+@router.callback_query(F.data.startswith("bw_add_exception:"))
+async def cb_bw_add_exception(callback: CallbackQuery, state: FSMContext) -> None:
+    route_id = int(callback.data.split(":")[1])
+    await state.update_data(route_id=route_id,
+                            prompt_msg_id=callback.message.message_id,
+                            prompt_chat_id=callback.message.chat.id)
+    await state.set_state(BannedWordsStates.adding_route_exception)
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data=f"bw_select_route:{route_id}"))
+    await callback.message.edit_text(
+        "🟢 <b>Исключение для маршрута</b>\n\n"
+        "Отправьте слово(а), которые запрещены глобально, но должны "
+        "<b>пропускаться</b> именно для этого маршрута:\n\n"
+        "<i>Пример: реклама</i>",
+        reply_markup=builder.as_markup(),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(BannedWordsStates.adding_route_exception)
+async def process_add_route_exception(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    route_id = data.get("route_id")
+    prompt_msg_id = data.get("prompt_msg_id")
+    prompt_chat_id = data.get("prompt_chat_id")
+
+    await _try_delete(message)
+
+    if not route_id:
+        return
+
+    text = message.text or ""
+    raw_words = [w.strip() for w in text.replace("\n", ",").split(",") if w.strip()]
+    if not raw_words:
+        if prompt_msg_id:
+            builder = InlineKeyboardBuilder()
+            builder.row(InlineKeyboardButton(text="❌ Отмена", callback_data=f"bw_select_route:{route_id}"))
+            await _edit_prompt(message.bot, prompt_chat_id, prompt_msg_id,
+                               "⚠️ Нет слов. Попробуйте ещё раз:", builder.as_markup())
+        return
+
+    added = 0
+    skipped = 0
+    async with async_session_factory() as session:
+        repo = BannedWordRepository(session)
+        for w in raw_words:
+            result = await repo.add(w, route_id=route_id, is_exception=True)
+            if result:
+                added += 1
+            else:
+                skipped += 1
+        await session.commit()
+
+    await state.clear()
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="◀️ К маршруту", callback_data=f"bw_select_route:{route_id}"))
+    builder.row(InlineKeyboardButton(text="🏠 Главное меню", callback_data="main_menu"))
+    result_text = f"✅ Добавлено исключений: <b>{added}</b>\n⏭ Уже было: <b>{skipped}</b>"
+
+    if prompt_msg_id:
+        await _edit_prompt(message.bot, prompt_chat_id, prompt_msg_id,
+                           result_text, builder.as_markup())
+    else:
+        await message.answer(result_text, reply_markup=builder.as_markup(), parse_mode="HTML")
+
+
 # ── FULL LIST ─────────────────────────────────────────────────────────────────
 
 @router.callback_query(F.data.startswith("bw_list:"))
@@ -330,7 +401,8 @@ async def cb_bw_list(callback: CallbackQuery, state: FSMContext) -> None:
     lines = []
     for w in words[start:end]:
         scope = "🌍" if w.route_id is None else f"🎯{route_names.get(w.route_id, f'#{w.route_id}')}"
-        lines.append(f"• {scope} <code>{w.word}</code>")
+        exc = " (исключение)" if w.is_exception else ""
+        lines.append(f"• {scope} <code>{w.word}</code>{exc}")
 
     text = f"📋 <b>Все запретные слова</b> ({total}):\n\n" + ("\n".join(lines) if lines else "Список пуст")
 
@@ -407,7 +479,8 @@ async def process_search(message: Message, state: FSMContext) -> None:
         lines = []
         for w in results:
             scope = "🌍 Глобально" if w.route_id is None else f"🎯 {route_names.get(w.route_id, f'маршрут #{w.route_id}')}"
-            lines.append(f"✅ Добавлено — <code>{w.word}</code> ({scope})")
+            kind = "🟢 Исключение" if w.is_exception else "✅ Добавлено"
+            lines.append(f"{kind} — <code>{w.word}</code> ({scope})")
         text = f"🔍 По запросу «<b>{query}</b>»:\n\n" + "\n".join(lines)
 
     if prompt_msg_id:

@@ -38,10 +38,14 @@ _URL_RE = _re.compile(r'https?://\S+|t\.me/\S+|@\w{3,}')
 _SIGNATURE_RE = _re.compile(
     r'^.{1,40}·.{0,20}(назад|только\s*что)\s*$', _re.IGNORECASE
 )
+# Matches a disclosure marker like "(Реклама)" — common on sponsored/ad
+# paragraphs even when the ad's link is a hyperlink entity (no literal URL
+# in plain text, so _URL_RE alone wouldn't catch it).
+_AD_MARKER_RE = _re.compile(r'\(\s*реклама\s*\)', _re.IGNORECASE)
 
 
 def _is_footer_paragraph(p: str) -> bool:
-    return bool(_URL_RE.search(p) or _SIGNATURE_RE.search(p))
+    return bool(_URL_RE.search(p) or _SIGNATURE_RE.search(p) or _AD_MARKER_RE.search(p))
 
 
 def _strip_footer(text: str) -> str:
@@ -338,9 +342,9 @@ async def _process_single_message(
                 if await _is_banned(msg_text, route.id):
                     log.info("message_banned", src=source_channel_id, msg=message.id, dest=dest.telegram_id)
                     return
+                msg_text = await _apply_replacements(msg_text, route.id)
                 if getattr(route, "strip_footer", False):
                     msg_text = _strip_footer(msg_text)
-                msg_text = await _apply_replacements(msg_text, route.id)
                 log.info("sending_message", src=source_channel_id, msg=message.id, dest=dest.telegram_id)
                 dest_msg_id = await send_message(
                     telethon_client, message, dest.telegram_id, override_text=msg_text,
@@ -562,9 +566,9 @@ async def _process_album_poll(
                 if await _is_banned(first_text, route.id):
                     log.info("album_banned", src=source_channel_id, group=grouped_id, dest=dest.telegram_id)
                     return
+                first_text = await _apply_replacements(first_text, route.id)
                 if getattr(route, "strip_footer", False):
                     first_text = _strip_footer(first_text)
-                first_text = await _apply_replacements(first_text, route.id)
                 dest_ids = await send_album(client, messages, dest.telegram_id, override_caption=first_text)
                 if not dest_ids:
                     log.error("poll_album_failed", src=source_channel_id, dest=dest.telegram_id)
