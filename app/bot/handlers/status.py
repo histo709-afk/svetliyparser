@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from aiogram import F, Router
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
@@ -779,3 +779,39 @@ async def cmd_renamedest(message: Message) -> None:
         f"✅ Переименовано!\n\n<code>{telegram_id}</code>\n«{old_title or '(без названия)'}» → «{new_title}»",
         parse_mode="HTML",
     )
+
+
+# ── FREE-TEXT CHANNEL SEARCH ──────────────────────────────────────────────────
+# Typing plain text (not a command, no active FSM step) searches sources and
+# destinations by name/username substring, so you don't need /debugsource.
+
+@router.message(StateFilter(None), F.text, ~F.text.startswith("/"))
+async def search_channels_by_text(message: Message) -> None:
+    query = message.text.strip().lower().lstrip("@")
+    if len(query) < 2:
+        return
+
+    async with async_session_factory() as session:
+        repo = ChannelRepository(session)
+        sources = await repo.list_all_sources()
+        dests = await repo.list_all_destinations()
+
+    src_matches = [s for s in sources if query in (s.username or "").lower() or query in (s.title or "").lower()]
+    dst_matches = [d for d in dests if query in (d.username or "").lower() or query in (d.title or "").lower()]
+
+    if not src_matches and not dst_matches:
+        return  # not a channel search — avoid noisy replies to unrelated chat
+
+    lines = [f"🔎 <b>Найдено по «{message.text.strip()}»:</b>\n"]
+    if src_matches:
+        lines.append("📥 <b>Источники:</b>")
+        for s in src_matches[:15]:
+            status = "✅" if s.is_active else "⏸"
+            lines.append(f"{status} {channel_display_name(s)} — <code>{s.telegram_id}</code>")
+    if dst_matches:
+        lines.append("\n📤 <b>Назначения:</b>")
+        for d in dst_matches[:15]:
+            status = "✅" if d.is_active else "⏸"
+            lines.append(f"{status} {channel_display_name(d)} — <code>{d.telegram_id}</code>")
+
+    await message.answer("\n".join(lines), parse_mode="HTML")
