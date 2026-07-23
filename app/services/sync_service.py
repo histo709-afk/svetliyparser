@@ -29,6 +29,20 @@ async def _is_banned(text: str, route_id: int) -> bool:
     return any(w in text_lower for w in words)
 
 
+async def _passes_required_keywords(text: str, route_id: int) -> bool:
+    """If the route has required keywords configured, the post must contain
+    at least one of them (case-insensitive) to be forwarded. Routes with no
+    required keywords are unaffected (always pass)."""
+    from app.repositories.required_keyword_repo import RequiredKeywordRepository
+    async with async_session_factory() as session:
+        repo = RequiredKeywordRepository(session)
+        words = await repo.get_for_check(route_id)
+    if not words:
+        return True
+    text_lower = (text or "").lower()
+    return any(w in text_lower for w in words)
+
+
 import re as _re
 
 _URL_RE = _re.compile(r'https?://\S+|t\.me/\S+|@\w{3,}')
@@ -350,6 +364,9 @@ async def _process_single_message(
                 if await _is_banned(msg_text, route.id):
                     log.info("message_banned", src=source_channel_id, msg=message.id, dest=dest.telegram_id)
                     return
+                if not await _passes_required_keywords(msg_text, route.id):
+                    log.info("message_missing_required_keyword", src=source_channel_id, msg=message.id, dest=dest.telegram_id)
+                    return
                 msg_text = await _apply_replacements(msg_text, route.id)
                 if getattr(route, "strip_footer", False):
                     msg_text = _strip_footer(msg_text)
@@ -573,6 +590,9 @@ async def _process_album_poll(
                 first_text = messages[0].message or messages[0].text or "" if messages else ""
                 if await _is_banned(first_text, route.id):
                     log.info("album_banned", src=source_channel_id, group=grouped_id, dest=dest.telegram_id)
+                    return
+                if not await _passes_required_keywords(first_text, route.id):
+                    log.info("album_missing_required_keyword", src=source_channel_id, group=grouped_id, dest=dest.telegram_id)
                     return
                 first_text = await _apply_replacements(first_text, route.id)
                 if getattr(route, "strip_footer", False):
