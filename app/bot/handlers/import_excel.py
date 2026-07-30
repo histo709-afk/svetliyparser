@@ -53,9 +53,34 @@ async def handle_excel_import(message: Message) -> None:
         await message.answer("❌ Файл пустой.")
         return
 
-    # Extract (source_link, dest_link) as the LAST two non-empty cells in each
-    # row — tolerates leading blank columns and varying column counts.
-    def _extract_links(row):
+    # Try to locate "Источник" / "Назначение" columns by header name first —
+    # handles files with extra columns (city name, numeric dest ID, ...) in
+    # any order. Falls back to "last two non-empty cells" for simple files
+    # with no header or unrecognized header text.
+    def _find_header_cols(header_row):
+        if not header_row:
+            return None
+        src_col = dst_col = None
+        for i, cell in enumerate(header_row):
+            name = str(cell or "").strip().lower()
+            if "источник" in name and src_col is None:
+                src_col = i
+            elif "назначен" in name and "id" not in name and dst_col is None:
+                dst_col = i
+        if src_col is not None and dst_col is not None:
+            return src_col, dst_col
+        return None
+
+    def _extract_links_by_index(row, src_col, dst_col):
+        if not row or len(row) <= max(src_col, dst_col):
+            return None
+        src = row[src_col]
+        dst = row[dst_col]
+        if src in (None, "") or dst in (None, ""):
+            return None
+        return str(src).strip(), str(dst).strip()
+
+    def _extract_links_positional(row):
         if not row:
             return None
         cells = [str(c).strip() for c in row if c not in (None, "")]
@@ -63,15 +88,25 @@ async def handle_excel_import(message: Message) -> None:
             return None
         return cells[-2], cells[-1]
 
-    def _looks_like_data(row) -> bool:
-        pair = _extract_links(row)
-        if not pair:
-            return False
-        joined = " ".join(pair)
-        return "t.me/" in joined or "http" in joined
+    header_cols = _find_header_cols(rows[0]) if rows else None
 
-    raw_rows = rows if _looks_like_data(rows[0]) else rows[1:]
-    data_rows = [pair for pair in (_extract_links(r) for r in raw_rows) if pair]
+    if header_cols:
+        src_col, dst_col = header_cols
+        data_rows = [
+            pair for pair in (_extract_links_by_index(r, src_col, dst_col) for r in rows[1:])
+            if pair
+        ]
+    else:
+        def _looks_like_data(row) -> bool:
+            pair = _extract_links_positional(row)
+            if not pair:
+                return False
+            joined = " ".join(pair)
+            return "t.me/" in joined or "http" in joined
+
+        raw_rows = rows if _looks_like_data(rows[0]) else rows[1:]
+        data_rows = [pair for pair in (_extract_links_positional(r) for r in raw_rows) if pair]
+
     if not data_rows:
         await message.answer("❌ Файл пустой или содержит только заголовки.")
         return
