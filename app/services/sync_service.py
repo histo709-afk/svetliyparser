@@ -118,6 +118,17 @@ def _flexible_pattern(find_text: str) -> "_re.Pattern | None":
         return None
 
 
+def _album_caption(messages: List[Message]) -> str:
+    """Telegram attaches the caption to whichever message the sender captioned
+    when building the album — not necessarily the lowest-id one. Scan all
+    messages in the group and use the first non-empty text found."""
+    for msg in messages:
+        text = msg.message or getattr(msg, "text", None) or ""
+        if text:
+            return text
+    return ""
+
+
 async def _apply_replacements(text: str, route_id: int) -> str:
     """Apply text replacement rules (global + route-specific) to message text."""
     if not text:
@@ -587,7 +598,7 @@ async def _process_album_poll(
 
             async def _fwd(route):
                 dest = route.destination
-                first_text = messages[0].message or messages[0].text or "" if messages else ""
+                first_text = _album_caption(messages)
                 if await _is_banned(first_text, route.id):
                     log.info("album_banned", src=source_channel_id, group=grouped_id, dest=dest.telegram_id)
                     return
