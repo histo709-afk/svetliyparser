@@ -65,7 +65,6 @@ async def send_message(
                     chat_id=dest_channel_id,
                     document=BufferedInputFile(data, filename or "file"),
                     caption=text or None,
-                    caption_entities=entities or None,
                 )
             return result.message_id
 
@@ -140,13 +139,11 @@ async def send_album(
                     media_items.append(InputMediaVideo(
                         media=BufferedInputFile(data, filename or "video.mp4"),
                         caption=cap,
-                        caption_entities=cap_entities,
                     ))
                 else:
                     media_items.append(InputMediaPhoto(
                         media=BufferedInputFile(data, filename or "file"),
                         caption=cap,
-                        caption_entities=cap_entities,
                     ))
 
         if not media_items:
