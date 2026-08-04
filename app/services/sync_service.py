@@ -17,6 +17,21 @@ from app.services.forwarder import send_album, send_message
 log = structlog.get_logger(__name__)
 
 
+async def _resolve_reply_to(
+    msg_repo: "MessageRepository",
+    source_channel_id: int,
+    reply_source_msg_id: Optional[int],
+    dest_channel_id: int,
+) -> Optional[int]:
+    """If the source message is a reply to another message that was already
+    forwarded to this destination, return that copy's dest_message_id so the
+    forwarded post can be threaded the same way in the destination channel."""
+    if not reply_source_msg_id:
+        return None
+    copy = await msg_repo.find_copy_for_dest(source_channel_id, reply_source_msg_id, dest_channel_id)
+    return copy.dest_message_id if copy else None
+
+
 async def _is_banned(text: str, route_id: int) -> bool:
     """Check if message text contains any banned word for this route."""
     if not text:
@@ -301,8 +316,14 @@ async def _flush_album(
 
             async def _forward_album_one(route):
                 dest = route.destination
+                reply_to = await _resolve_reply_to(
+                    msg_repo, source_channel_id,
+                    getattr(getattr(messages[0], "reply_to", None), "reply_to_msg_id", None),
+                    dest.telegram_id,
+                )
                 dest_ids = await send_album(
                     telethon_client, messages, dest.telegram_id,
+                    reply_to_message_id=reply_to,
                 )
                 if not dest_ids:
                     err = f"Album forward failed: src={source_channel_id} group={grouped_id} dest={dest.telegram_id}"
@@ -381,9 +402,15 @@ async def _process_single_message(
                 msg_text = await _apply_replacements(msg_text, route.id)
                 if getattr(route, "strip_footer", False):
                     msg_text = _strip_footer(msg_text)
+                reply_to = await _resolve_reply_to(
+                    msg_repo, source_channel_id,
+                    getattr(getattr(message, "reply_to", None), "reply_to_msg_id", None),
+                    dest.telegram_id,
+                )
                 log.info("sending_message", src=source_channel_id, msg=message.id, dest=dest.telegram_id)
                 dest_msg_id = await send_message(
                     telethon_client, message, dest.telegram_id, override_text=msg_text,
+                    reply_to_message_id=reply_to,
                 )
                 if dest_msg_id is None:
                     err = f"Forward failed: src_channel={source_channel_id} src_msg={message.id} dest={dest.telegram_id}"
@@ -608,7 +635,15 @@ async def _process_album_poll(
                 first_text = await _apply_replacements(first_text, route.id)
                 if getattr(route, "strip_footer", False):
                     first_text = _strip_footer(first_text)
-                dest_ids = await send_album(client, messages, dest.telegram_id, override_caption=first_text)
+                reply_to = await _resolve_reply_to(
+                    msg_repo, source_channel_id,
+                    getattr(getattr(messages[0], "reply_to", None), "reply_to_msg_id", None),
+                    dest.telegram_id,
+                )
+                dest_ids = await send_album(
+                    client, messages, dest.telegram_id, override_caption=first_text,
+                    reply_to_message_id=reply_to,
+                )
                 if not dest_ids:
                     log.error("poll_album_failed", src=source_channel_id, dest=dest.telegram_id)
                     return
