@@ -15,6 +15,18 @@ def _get_bot() -> Bot:
     return Bot(token=settings.BOT_TOKEN)
 
 
+CAPTION_LIMIT = 1024  # Telegram's max caption length for photo/video/document
+
+
+def _truncate_caption(text: Optional[str]) -> Optional[str]:
+    """Telegram rejects the whole send if a media caption exceeds 1024 chars
+    (unlike a plain text message, capped at 4096) — truncate instead of
+    losing the post entirely."""
+    if not text or len(text) <= CAPTION_LIMIT:
+        return text
+    return text[:CAPTION_LIMIT - 1].rstrip() + "…"
+
+
 
 async def send_message(
     client,
@@ -60,7 +72,7 @@ async def _send_message_impl(
             result = await bot.send_photo(
                 chat_id=dest_channel_id,
                 photo=BufferedInputFile(data, "photo.jpg"),
-                caption=text or None,
+                caption=_truncate_caption(text) or None,
                 reply_to_message_id=reply_to_message_id,
             )
             return result.message_id
@@ -77,14 +89,14 @@ async def _send_message_impl(
                 result = await bot.send_video(
                     chat_id=dest_channel_id,
                     video=BufferedInputFile(data, filename or "video.mp4"),
-                    caption=text or None,
+                    caption=_truncate_caption(text) or None,
                     reply_to_message_id=reply_to_message_id,
                 )
             else:
                 result = await bot.send_document(
                     chat_id=dest_channel_id,
                     document=BufferedInputFile(data, filename or "file"),
-                    caption=text or None,
+                    caption=_truncate_caption(text) or None,
                     reply_to_message_id=reply_to_message_id,
                 )
             return result.message_id
@@ -95,7 +107,7 @@ async def _send_message_impl(
             result = await bot.send_document(
                 chat_id=dest_channel_id,
                 document=BufferedInputFile(data, "file"),
-                caption=text or None,
+                caption=_truncate_caption(text) or None,
                 reply_to_message_id=reply_to_message_id,
             )
             return result.message_id
@@ -152,11 +164,11 @@ async def _send_album_impl(
 
         for msg in messages:
             if not caption_used and override_caption is not None:
-                cap = override_caption if override_caption else None
+                cap = _truncate_caption(override_caption) if override_caption else None
                 caption_used = True
             else:
                 text = msg.message or ""
-                cap = text if not caption_used and text else None
+                cap = _truncate_caption(text) if not caption_used and text else None
                 if cap:
                     caption_used = True
 
