@@ -500,9 +500,14 @@ def reset_last_seen(telegram_ids: Optional[List[int]] = None) -> int:
     return len(keys)
 
 
+STARTUP_CATCHUP_COUNT = 3  # on boot, pick up this many of the most recent posts per channel
+
+
 async def _init_last_seen(client: TelegramClient) -> None:
-    """On startup, record the latest message ID for every source channel
-    so we only forward posts that appear AFTER the bot starts."""
+    """On startup, rewind each source channel's cursor so the next poll cycle
+    picks up its last STARTUP_CATCHUP_COUNT posts, instead of only forwarding
+    posts that appear after the bot starts. Dedup on send prevents repeats
+    across restarts."""
     async with async_session_factory() as session:
         repo = ChannelRepository(session)
         sources = await repo.list_active_sources()
@@ -511,12 +516,13 @@ async def _init_last_seen(client: TelegramClient) -> None:
     for source in sources:
         try:
             try:
-                msgs = await client.get_messages(source.telegram_id, limit=1)
+                msgs = await client.get_messages(source.telegram_id, limit=STARTUP_CATCHUP_COUNT)
             except ValueError:
                 entity = await client.get_entity(source.telegram_id)
-                msgs = await client.get_messages(entity, limit=1)
+                msgs = await client.get_messages(entity, limit=STARTUP_CATCHUP_COUNT)
             if msgs:
-                _last_seen[source.telegram_id] = msgs[0].id
+                oldest_of_batch = min(m.id for m in msgs)
+                _last_seen[source.telegram_id] = oldest_of_batch - 1
             await asyncio.sleep(0.1)
         except Exception:
             _last_seen[source.telegram_id] = 0
