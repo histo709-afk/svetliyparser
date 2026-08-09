@@ -205,6 +205,12 @@ async def _send_notification(
 _album_buffer: Dict[Tuple[int, str], List[Message]] = {}
 _album_timers: Dict[Tuple[int, str], asyncio.TimerHandle] = {}
 
+# Claims (source_channel_id, msg_id)/(source_channel_id, grouped_id) currently
+# being processed, so the push listener and the poll loop can't both forward
+# the same message/album when they observe it at nearly the same time.
+_in_flight_messages: set = set()
+_in_flight_albums: set = set()
+
 # Redis key for error log
 ERRORS_KEY = "sync:errors"
 MAX_ERRORS = 100
@@ -274,6 +280,14 @@ async def _flush_album(
         return
 
     source_channel_id, grouped_id = key
+    claim_key = (source_channel_id, grouped_id)
+    if claim_key in _in_flight_albums:
+        log.info("duplicate_album_processing_skipped", src=source_channel_id, group=grouped_id)
+        return
+    _in_flight_albums.add(claim_key)
+    if len(_in_flight_albums) > 2000:
+        _in_flight_albums.clear()
+
     log.info(
         "flushing_album",
         source=source_channel_id,
@@ -352,6 +366,20 @@ async def _process_single_message(
     source_channel_id: int,
     telethon_client: TelegramClient,
 ) -> None:
+    # The live push listener and the poll loop can both pick up the same new
+    # message at nearly the same instant. Both would see "no copy exists yet"
+    # in the DB dedup check since neither has committed, and both would send
+    # — a duplicate post. Guard in-process: claim (source, msg_id) atomically
+    # (no await between check and add, so no interleaving is possible) before
+    # either coroutine touches the DB.
+    claim_key = (source_channel_id, message.id)
+    if claim_key in _in_flight_messages:
+        log.info("duplicate_processing_skipped", src=source_channel_id, msg=message.id)
+        return
+    _in_flight_messages.add(claim_key)
+    if len(_in_flight_messages) > 5000:
+        _in_flight_messages.clear()  # safety net against unbounded growth
+
     async with async_session_factory() as session:
         try:
             channel_repo = ChannelRepository(session)
@@ -601,6 +629,14 @@ async def _process_album_poll(
     client: TelegramClient,
 ) -> None:
     """Process a polled album — same logic as _flush_album but without buffering."""
+    claim_key = (source_channel_id, grouped_id)
+    if claim_key in _in_flight_albums:
+        log.info("duplicate_album_processing_skipped", src=source_channel_id, group=grouped_id)
+        return
+    _in_flight_albums.add(claim_key)
+    if len(_in_flight_albums) > 2000:
+        _in_flight_albums.clear()
+
     messages = sorted(messages, key=lambda m: m.id)
     async with async_session_factory() as session:
         try:
