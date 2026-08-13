@@ -9,6 +9,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.fsm.storage.redis import RedisStorage
+from aiogram.types import BotCommand, MenuButtonCommands
 
 from app.bot.middlewares import AdminMiddleware
 from app.bot.router import main_router
@@ -52,6 +53,19 @@ async def start_aiogram_bot() -> None:
     dp.callback_query.middleware(AdminMiddleware())
 
     dp.include_router(main_router)
+
+    # The chat "Menu" button next to the text input is a bot-level default —
+    # unlike a reply keyboard, it shows up immediately for every user, even
+    # before they've ever sent /start or received any message from the bot.
+    await bot.set_my_commands([
+        BotCommand(command="start", description="Открыть главное меню"),
+        BotCommand(command="routes", description="Маршруты пересылки"),
+        BotCommand(command="status", description="Статус системы"),
+        BotCommand(command="logs", description="Последние ошибки"),
+        BotCommand(command="resync", description="Подхватить последние посты"),
+        BotCommand(command="joinall", description="Довступить во все источники"),
+    ])
+    await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
     log.info("starting_aiogram_bot")
     try:
