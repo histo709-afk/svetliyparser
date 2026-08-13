@@ -912,6 +912,105 @@ async def cmd_nolinksources(message: Message) -> None:
         await message.answer(text[i:i + 3500], parse_mode="HTML")
 
 
+@router.message(Command("setusername"))
+async def cmd_setusername(message: Message) -> None:
+    """Directly fix a source's username field (e.g. when it went missing
+    despite the channel being public) and join by it.
+    Usage: /setusername <source_id> <username>
+    Example: /setusername 332 chelyabinsk_smi"""
+    from sqlalchemy import select
+    from app.models.channel import SourceChannel
+    from app.telethon_client.client import telethon_client
+    from app.services.channel_service import join_channel_link
+
+    parts = message.text.split() if message.text else []
+    if len(parts) < 3:
+        await message.answer(
+            "Использование:\n<code>/setusername source_id username</code>\n\n"
+            "Пример:\n<code>/setusername 332 chelyabinsk_smi</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    try:
+        source_id = int(parts[1])
+    except ValueError:
+        await message.answer("⚠️ source_id должен быть числом (см. /nolinksources).")
+        return
+
+    username = parts[2].strip().lstrip("@")
+
+    async with async_session_factory() as session:
+        result = await session.execute(select(SourceChannel).where(SourceChannel.id == source_id))
+        src = result.scalar_one_or_none()
+        if src is None:
+            await message.answer(f"❌ Источник с id={source_id} не найден.", parse_mode="HTML")
+            return
+        src.username = username
+        telegram_id = src.telegram_id
+        title = src.title
+        await session.commit()
+
+    ok = await join_channel_link(telethon_client, f"@{username}")
+    reset_last_seen([telegram_id])
+
+    await message.answer(
+        f"✅ Username обновлён: <b>{title}</b> → @{username}\n"
+        f"Вступление: {'успешно' if ok else 'уже был участником или без изменений'}\n"
+        f"Курсор сброшен — посты подхватятся в течение ~1 минуты.",
+        parse_mode="HTML",
+    )
+
+
+@router.message(Command("setinvitelink"))
+async def cmd_setinvitelink(message: Message) -> None:
+    """Directly set a source's invite_link and join through it.
+    Usage: /setinvitelink <source_id> <invite_link>
+    Example: /setinvitelink 356 https://t.me/joinchat/QicCtIY30tAwYzgy"""
+    from sqlalchemy import select
+    from app.models.channel import SourceChannel
+    from app.telethon_client.client import telethon_client
+    from app.services.channel_service import join_channel_link
+
+    parts = message.text.split() if message.text else []
+    if len(parts) < 3:
+        await message.answer(
+            "Использование:\n<code>/setinvitelink source_id ссылка</code>\n\n"
+            "Пример:\n<code>/setinvitelink 356 https://t.me/joinchat/QicCtIY30tAwYzgy</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    try:
+        source_id = int(parts[1])
+    except ValueError:
+        await message.answer("⚠️ source_id должен быть числом (см. /nolinksources).")
+        return
+
+    invite_link = parts[2].strip()
+
+    async with async_session_factory() as session:
+        result = await session.execute(select(SourceChannel).where(SourceChannel.id == source_id))
+        src = result.scalar_one_or_none()
+        if src is None:
+            await message.answer(f"❌ Источник с id={source_id} не найден.", parse_mode="HTML")
+            return
+        src.invite_link = invite_link
+        telegram_id = src.telegram_id
+        title = src.title
+        await session.commit()
+
+    ok = await join_channel_link(telethon_client, invite_link)
+    reset_last_seen([telegram_id])
+
+    await message.answer(
+        f"✅ Invite-ссылка сохранена: <b>{title}</b>\n"
+        f"Вступление: {'успешно' if ok else '❌ не удалось — проверь ссылку'}\n"
+        f"Курсор сброшен — посты подхватятся в течение ~1 минуты.",
+        parse_mode="HTML",
+    )
+
+
 # ── FREE-TEXT CHANNEL SEARCH ──────────────────────────────────────────────────
 # Typing plain text (not a command, no active FSM step) searches sources and
 # destinations by name/username substring, so you don't need /debugsource.
