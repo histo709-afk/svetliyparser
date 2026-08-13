@@ -881,6 +881,37 @@ async def cmd_renamedest(message: Message) -> None:
     )
 
 
+@router.message(Command("nolinksources"))
+async def cmd_nolinksources(message: Message) -> None:
+    """List every active source with neither a username nor a stored invite
+    link — the exact set /joinall reports as unrejoinable. Shows telegram_id
+    so a targeted fix-file can be built for specific ones (e.g. by title
+    match)."""
+    parts = message.text.split(maxsplit=1) if message.text else []
+    query = parts[1].strip().lower() if len(parts) > 1 else None
+
+    async with async_session_factory() as session:
+        repo = ChannelRepository(session)
+        sources = await repo.list_active_sources()
+
+    no_link = [s for s in sources if not s.username and not s.invite_link]
+    if query:
+        no_link = [s for s in no_link if query in (s.title or "").lower()]
+
+    if not no_link:
+        await message.answer("Таких источников не найдено.")
+        return
+
+    lines = [f"📋 <b>Источники без username и без invite_link</b> ({len(no_link)}):\n"]
+    for s in no_link:
+        lines.append(f"<b>{s.title or '(без названия)'}</b>\nid=<code>{s.id}</code> telegram_id=<code>{s.telegram_id}</code>")
+
+    # Telegram messages cap at 4096 chars — split into chunks if needed
+    text = "\n\n".join(lines)
+    for i in range(0, len(text), 3500):
+        await message.answer(text[i:i + 3500], parse_mode="HTML")
+
+
 # ── FREE-TEXT CHANNEL SEARCH ──────────────────────────────────────────────────
 # Typing plain text (not a command, no active FSM step) searches sources and
 # destinations by name/username substring, so you don't need /debugsource.
