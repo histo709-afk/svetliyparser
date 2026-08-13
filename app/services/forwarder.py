@@ -15,14 +15,43 @@ def _get_bot() -> Bot:
     return Bot(token=settings.BOT_TOKEN)
 
 
+CAPTION_LIMIT = 1024  # Telegram's max caption length for photo/video/document
+
+
+def _truncate_caption(text: Optional[str]) -> Optional[str]:
+    """Telegram rejects the whole send if a media caption exceeds 1024 chars
+    (unlike a plain text message, capped at 4096) — truncate instead of
+    losing the post entirely."""
+    if not text or len(text) <= CAPTION_LIMIT:
+        return text
+    return text[:CAPTION_LIMIT - 1].rstrip() + "…"
+
+
 
 async def send_message(
     client,
     message,
     dest_channel_id: int,
     override_text: Optional[str] = None,
+    reply_to_message_id: Optional[int] = None,
 ) -> Optional[int]:
-    """Copy a single message (text / photo / video) to dest via Bot API."""
+    """Copy a single message (text / photo / video) to dest via Bot API.
+    Falls back to sending without the reply link if the replied-to message
+    is gone (deleted/invalid) so a stale thread link never blocks the post."""
+    result = await _send_message_impl(client, message, dest_channel_id, override_text, reply_to_message_id)
+    if result is None and reply_to_message_id is not None:
+        log.warning("send_message_reply_fallback", dest=dest_channel_id, msg_id=message.id)
+        result = await _send_message_impl(client, message, dest_channel_id, override_text, None)
+    return result
+
+
+async def _send_message_impl(
+    client,
+    message,
+    dest_channel_id: int,
+    override_text: Optional[str],
+    reply_to_message_id: Optional[int],
+) -> Optional[int]:
     bot = _get_bot()
     try:
         text = override_text if override_text is not None else (message.message or message.text or "")
@@ -32,6 +61,7 @@ async def send_message(
             result = await bot.send_message(
                 chat_id=dest_channel_id,
                 text=text or ".",
+                reply_to_message_id=reply_to_message_id,
             )
             return result.message_id
 
@@ -42,7 +72,8 @@ async def send_message(
             result = await bot.send_photo(
                 chat_id=dest_channel_id,
                 photo=BufferedInputFile(data, "photo.jpg"),
-                caption=text or None,
+                caption=_truncate_caption(text) or None,
+                reply_to_message_id=reply_to_message_id,
             )
             return result.message_id
 
@@ -58,13 +89,15 @@ async def send_message(
                 result = await bot.send_video(
                     chat_id=dest_channel_id,
                     video=BufferedInputFile(data, filename or "video.mp4"),
-                    caption=text or None,
+                    caption=_truncate_caption(text) or None,
+                    reply_to_message_id=reply_to_message_id,
                 )
             else:
                 result = await bot.send_document(
                     chat_id=dest_channel_id,
                     document=BufferedInputFile(data, filename or "file"),
-                    caption=text or None,
+                    caption=_truncate_caption(text) or None,
+                    reply_to_message_id=reply_to_message_id,
                 )
             return result.message_id
 
@@ -74,12 +107,15 @@ async def send_message(
             result = await bot.send_document(
                 chat_id=dest_channel_id,
                 document=BufferedInputFile(data, "file"),
-                caption=text or None,
+                caption=_truncate_caption(text) or None,
+                reply_to_message_id=reply_to_message_id,
             )
             return result.message_id
 
         if text:
-            result = await bot.send_message(chat_id=dest_channel_id, text=text)
+            result = await bot.send_message(
+                chat_id=dest_channel_id, text=text, reply_to_message_id=reply_to_message_id,
+            )
             return result.message_id
 
         log.warning("send_message_nothing_to_send", dest=dest_channel_id, msg_id=message.id)
@@ -97,8 +133,25 @@ async def send_album(
     messages: List,
     dest_channel_id: int,
     override_caption: Optional[str] = None,
+    reply_to_message_id: Optional[int] = None,
 ) -> List[int]:
-    """Copy a media group (album) to dest via Bot API send_media_group."""
+    """Copy a media group (album) to dest via Bot API send_media_group.
+    Falls back to sending without the reply link if the replied-to message
+    is gone (deleted/invalid) so a stale thread link never blocks the album."""
+    result = await _send_album_impl(client, messages, dest_channel_id, override_caption, reply_to_message_id)
+    if not result and reply_to_message_id is not None:
+        log.warning("send_album_reply_fallback", dest=dest_channel_id)
+        result = await _send_album_impl(client, messages, dest_channel_id, override_caption, None)
+    return result
+
+
+async def _send_album_impl(
+    client,
+    messages: List,
+    dest_channel_id: int,
+    override_caption: Optional[str],
+    reply_to_message_id: Optional[int],
+) -> List[int]:
     if not messages:
         return []
     messages = sorted(messages, key=lambda m: m.id)
@@ -111,11 +164,11 @@ async def send_album(
 
         for msg in messages:
             if not caption_used and override_caption is not None:
-                cap = override_caption if override_caption else None
+                cap = _truncate_caption(override_caption) if override_caption else None
                 caption_used = True
             else:
                 text = msg.message or ""
-                cap = text if not caption_used and text else None
+                cap = _truncate_caption(text) if not caption_used and text else None
                 if cap:
                     caption_used = True
 
@@ -150,7 +203,9 @@ async def send_album(
             # All text — send first message text
             text = messages[0].message or ""
             if text:
-                result = await bot.send_message(chat_id=dest_channel_id, text=text)
+                result = await bot.send_message(
+                    chat_id=dest_channel_id, text=text, reply_to_message_id=reply_to_message_id,
+                )
                 return [result.message_id]
             return []
 
@@ -163,6 +218,7 @@ async def send_album(
                     photo=item.media,
                     caption=item.caption,
                     caption_entities=item.caption_entities,
+                    reply_to_message_id=reply_to_message_id,
                 )
             else:
                 result = await bot.send_video(
@@ -170,12 +226,14 @@ async def send_album(
                     video=item.media,
                     caption=item.caption,
                     caption_entities=item.caption_entities,
+                    reply_to_message_id=reply_to_message_id,
                 )
             return [result.message_id]
 
         results = await bot.send_media_group(
             chat_id=dest_channel_id,
             media=media_items,
+            reply_to_message_id=reply_to_message_id,
         )
         ids = [r.message_id for r in results]
         log.info("album_sent", dest=dest_channel_id, count=len(ids))
