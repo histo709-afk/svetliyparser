@@ -35,14 +35,18 @@ def parse_channel_link(text: str) -> str:
     Accepts:
     - https://t.me/channel
     - t.me/channel
+    - https://t.me/+HASH or t.me/joinchat/HASH (private invite, old and new style)
     - @channel
     - channel
-    Returns the identifier without @ or URL prefix.
+    Returns the identifier without @ or URL prefix. Private invite links are
+    normalized to the modern "+HASH" form regardless of which style was given.
     """
     text = text.strip()
     # Strip URL
     text = re.sub(r"https?://t\.me/", "", text)
     text = re.sub(r"t\.me/", "", text)
+    # Normalize legacy invite links: joinchat/HASH -> +HASH
+    text = re.sub(r"^joinchat/", "+", text)
     # Strip leading @
     text = text.lstrip("@")
     # Remove trailing slashes
