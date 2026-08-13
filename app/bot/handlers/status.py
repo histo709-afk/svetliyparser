@@ -708,17 +708,45 @@ async def cmd_joinall(message: Message) -> None:
         repo = ChannelRepository(session)
         sources = await repo.list_active_sources()
 
-    targets = [s for s in sources if s.username or s.invite_link]
+    candidates = [s for s in sources if s.username or s.invite_link]
     no_link = [s for s in sources if not s.username and not s.invite_link]
     if query:
-        targets = [s for s in targets if query in (s.username or "").lower() or query in (s.title or "").lower()]
+        candidates = [s for s in candidates if query in (s.username or "").lower() or query in (s.title or "").lower()]
         no_link = [s for s in no_link if query in (s.title or "").lower()]
 
-    if not targets:
+    if not candidates:
         await message.answer("Нет источников с username или сохранённой инвайт-ссылкой для вступления.")
         return
 
-    await message.answer(f"🔗 Вступаю в <b>{len(targets)}</b> каналов, это займёт несколько минут...", parse_mode="HTML")
+    # Skip channels the account already knows about (in its dialog list) —
+    # JoinChannelRequest against an already-member channel still counts
+    # toward Telegram's join-flood limit in practice, so blasting it at
+    # everyone (not just genuinely missing channels) triggers multi-minute
+    # FloodWaitErrors per channel and can turn a few real joins into hours.
+    try:
+        dialogs = await telethon_client.get_dialogs(limit=None)
+        known_ids = {d.entity.id for d in dialogs if hasattr(d, "entity")}
+        # Telethon dialog entity IDs are unsigned; our stored IDs are the
+        # full -100xxxxxxxxxx form — compare against both encodings.
+        known_full_ids = known_ids | {int(f"-100{eid}") for eid in known_ids}
+    except Exception:
+        known_full_ids = set()
+
+    targets = [s for s in candidates if s.telegram_id not in known_full_ids]
+    already_known = len(candidates) - len(targets)
+
+    if not targets:
+        await message.answer(
+            f"✅ Все {len(candidates)} каналов уже есть в диалогах аккаунта — вступать некуда.",
+            parse_mode="HTML",
+        )
+        return
+
+    await message.answer(
+        f"🔗 Пропущено (уже в диалогах): <b>{already_known}</b>\n"
+        f"Вступаю в <b>{len(targets)}</b> недостающих каналов, это может занять время из-за лимитов Telegram...",
+        parse_mode="HTML",
+    )
 
     joined = 0
     failed = 0
@@ -738,7 +766,8 @@ async def cmd_joinall(message: Message) -> None:
     reset_last_seen()
 
     text = (
-        f"✅ Готово!\n• Вступил/уже состоит: <b>{joined}</b>\n• Ошибок: <b>{failed}</b>\n\n"
+        f"✅ Готово!\n• Вступил/уже состоит: <b>{joined}</b>\n• Ошибок: <b>{failed}</b>\n"
+        f"• Пропущено (уже были в диалогах): <b>{already_known}</b>\n\n"
         f"Курсоры сброшены — посты пойдут в течение ~1 минуты."
     )
     if no_link:
