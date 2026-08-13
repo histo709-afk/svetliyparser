@@ -62,19 +62,32 @@ def _is_relevant(title: str, about: str) -> bool:
     return any(kw in text for kw in RELEVANCE_KEYWORDS)
 
 
-async def _search_candidates(client, city: str) -> dict[str, ChannelCandidate]:
+async def _search_candidates(client, city: str) -> tuple[dict[str, ChannelCandidate], list[str]]:
     """Fan out across a few query phrasings and merge unique public channels.
     Only entities with a username come back from global search at all —
-    private channels are never in this result set."""
+    private channels are never in this result set.
+
+    Also returns a per-query debug trail (chats seen / kept / error) so a
+    zero-result run can be diagnosed from the bot's own reply instead of
+    guessing blind — contacts.search's real-world behavior (result volume,
+    throttling, exact response shape) can't be verified without a live
+    Telegram session, which isn't available in the dev environment this
+    code is written in."""
     found: dict[str, ChannelCandidate] = {}
+    debug: list[str] = []
     for suffix in QUERY_SUFFIXES:
         query = f"{city} {suffix}".strip()
         try:
             result = await client(SearchRequest(q=query, limit=50))
         except Exception as exc:
+            msg = f"«{query}»: ошибка API — {str(exc)[:100]}"
             log.warning("collectsources_search_failed", query=query, error=str(exc)[:120])
+            debug.append(msg)
             await asyncio.sleep(1.5)
             continue
+
+        total_chats = len(result.chats)
+        kept = 0
         for chat in result.chats:
             if not isinstance(chat, Channel) or chat.megagroup:
                 continue
@@ -82,8 +95,13 @@ async def _search_candidates(client, city: str) -> dict[str, ChannelCandidate]:
             if not username or username in found:
                 continue
             found[username] = ChannelCandidate(username=username, title=chat.title or "")
+            kept += 1
+        debug.append(
+            f"«{query}»: чатов в ответе {total_chats}, "
+            f"users {len(result.users)}, новых каналов с username взято {kept}"
+        )
         await asyncio.sleep(1.5)
-    return found
+    return found, debug
 
 
 async def _enrich_candidate(client, cand: ChannelCandidate) -> Optional[ChannelCandidate]:
@@ -164,9 +182,12 @@ async def cmd_collect_sources(message: Message) -> None:
 
     await message.answer(f"🔍 Ищу каналы для «{city}» через Telegram-поиск (это не веб-скрапинг)...")
 
-    candidates = await _search_candidates(client, city)
+    candidates, debug = await _search_candidates(client, city)
     if not candidates:
-        await message.answer("Каналы не найдены — попробуй другое название города.")
+        await message.answer(
+            "❌ Каналы не найдены.\n\n<b>Диагностика по каждому запросу:</b>\n" + "\n".join(debug),
+            parse_mode="HTML",
+        )
         return
 
     async with async_session_factory() as session:
