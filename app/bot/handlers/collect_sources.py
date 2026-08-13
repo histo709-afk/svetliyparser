@@ -33,7 +33,7 @@ RELEVANCE_KEYWORDS = ["новост", "сми", "происшеств", "соб�
 POSTS_FOR_ENGAGEMENT = 20
 MAX_DAYS_SINCE_LAST_POST = 14
 MIN_SUBSCRIBERS = 500
-DEFAULT_TOP_N = 15
+DEFAULT_TOP_N = 50
 # Hard cap on how many candidates get the full enrich pass (subscriber count,
 # recent posts) in one run — each candidate costs a few API calls plus a
 # throttling sleep, so an unbounded list on a big city could run for a very
