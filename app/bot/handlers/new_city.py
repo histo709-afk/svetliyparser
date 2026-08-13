@@ -5,14 +5,15 @@ import structlog
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
+from telethon.errors import UserPrivacyRestrictedError
 from telethon.tl.functions.channels import CreateChannelRequest, EditAdminRequest, InviteToChannelRequest
 from telethon.tl.functions.messages import ExportChatInviteRequest
 from telethon.tl.types import ChatAdminRights
 
-OWNER_USERNAME = "BuLDoG000"
-
 from app.database import async_session_factory
 from app.repositories.channel_repo import ChannelRepository
+
+OWNER_USERNAME = "osnova_SMMsik"
 
 router = Router(name="new_city")
 log = structlog.get_logger(__name__)
@@ -57,10 +58,28 @@ async def _promote_bot_as_admin(client, channel_entity) -> bool:
     return True
 
 
+OWNER_ADMIN_RIGHTS = ChatAdminRights(
+    post_messages=True,
+    edit_messages=True,
+    delete_messages=True,
+    invite_users=True,
+    change_info=True,
+    add_admins=True,
+    anonymous=False,
+    pin_messages=True,
+    manage_call=True,
+)
+
+
 async def _add_owner_as_admin(client, channel_entity) -> bool:
     """Always invite the account owner (@BuLDoG000) into every newly created
     parser channel and grant full admin rights, so channels aren't left
-    accessible only to the userbot/management-bot pair."""
+    accessible only to the userbot/management-bot pair. Raises
+    UserPrivacyRestrictedError as-is (caller distinguishes it from other
+    failures) when the owner's Telegram privacy settings block being added
+    by someone who isn't a mutual contact — that can't be worked around
+    from this side, only from the owner's own privacy settings or by them
+    joining the invite link themselves."""
     from telethon.errors import UserAlreadyParticipantError
 
     owner_entity = await client.get_entity(OWNER_USERNAME)
@@ -73,17 +92,7 @@ async def _add_owner_as_admin(client, channel_entity) -> bool:
     await client(EditAdminRequest(
         channel=channel_entity,
         user_id=owner_entity,
-        admin_rights=ChatAdminRights(
-            post_messages=True,
-            edit_messages=True,
-            delete_messages=True,
-            invite_users=True,
-            change_info=True,
-            add_admins=True,
-            anonymous=False,
-            pin_messages=True,
-            manage_call=True,
-        ),
+        admin_rights=OWNER_ADMIN_RIGHTS,
         rank="owner",
     ))
     return True
@@ -135,8 +144,11 @@ async def cmd_new_city(message: Message) -> None:
         log.error("newcity_bot_promote_failed", channel=telegram_id, error=str(exc))
 
     owner_added = False
+    owner_privacy_blocked = False
     try:
         owner_added = await _add_owner_as_admin(client, new_channel)
+    except UserPrivacyRestrictedError:
+        owner_privacy_blocked = True
     except Exception as exc:
         log.error("newcity_owner_add_failed", channel=telegram_id, error=str(exc))
 
@@ -152,11 +164,16 @@ async def cmd_new_city(message: Message) -> None:
         "добавь <b>@Bot_Cloud_parserTG_bot</b> в администраторы канала вручную, "
         "иначе пересылка постов работать не будет."
     )
-    owner_line = (
-        f"👤 @{OWNER_USERNAME} добавлен с полными правами админа."
-        if owner_added else
-        f"⚠️ Не удалось добавить @{OWNER_USERNAME} — добавь вручную."
-    )
+    if owner_added:
+        owner_line = f"👤 @{OWNER_USERNAME} добавлен с полными правами админа."
+    elif owner_privacy_blocked:
+        owner_line = (
+            f"⚠️ Настройки приватности @{OWNER_USERNAME} не позволяют добавить его "
+            f"силой. Перейди по ссылке выше и вступи сам, затем пропиши "
+            f"<code>/promoteowner {telegram_id}</code> — права админа выдадутся автоматически."
+        )
+    else:
+        owner_line = f"⚠️ Не удалось добавить @{OWNER_USERNAME} — добавь вручную."
     await message.answer(
         f"✅ Канал «{title}» создан и зарегистрирован!\n\n"
         f"ID: <code>{dest.telegram_id}</code>\n"
@@ -167,3 +184,36 @@ async def cmd_new_city(message: Message) -> None:
         f"(колонки «Источник» / «Назначение», где «Назначение» = <code>{invite.link}</code>) — "
         f"бот сам заджойнит каналы и построит маршруты."
     )
+
+
+@router.message(Command("promoteowner"))
+async def cmd_promote_owner(message: Message) -> None:
+    """Retry granting @OWNER_USERNAME full admin rights in a channel they've
+    since joined themselves (e.g. after being blocked by privacy settings
+    during /newcity). Usage: /promoteowner <telegram_id>"""
+    parts = message.text.split() if message.text else []
+    if len(parts) < 2:
+        await message.answer(f"Использование: <code>/promoteowner ID_канала</code>", parse_mode="HTML")
+        return
+
+    try:
+        telegram_id = int(parts[1])
+    except ValueError:
+        await message.answer("⚠️ ID канала должен быть числом.")
+        return
+
+    client = _get_telethon_client()
+    try:
+        channel_entity = await client.get_entity(telegram_id)
+        owner_entity = await client.get_entity(OWNER_USERNAME)
+        await client(EditAdminRequest(
+            channel=channel_entity,
+            user_id=owner_entity,
+            admin_rights=OWNER_ADMIN_RIGHTS,
+            rank="owner",
+        ))
+    except Exception as exc:
+        await message.answer(f"❌ Не удалось выдать права: {exc}")
+        return
+
+    await message.answer(f"✅ @{OWNER_USERNAME} теперь админ с полными правами.")
