@@ -39,10 +39,14 @@ class ChannelRepository:
         return list(result.scalars().all())
 
     async def add_source(
-        self, telegram_id: int, username: Optional[str], title: Optional[str]
+        self,
+        telegram_id: int,
+        username: Optional[str],
+        title: Optional[str],
+        invite_link: Optional[str] = None,
     ) -> SourceChannel:
         channel = SourceChannel(
-            telegram_id=telegram_id, username=username, title=title
+            telegram_id=telegram_id, username=username, title=title, invite_link=invite_link,
         )
         self.session.add(channel)
         await self.session.flush()

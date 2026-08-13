@@ -690,9 +690,13 @@ async def cmd_resync(message: Message) -> None:
 
 @router.message(Command("joinall"))
 async def cmd_joinall(message: Message) -> None:
-    """Make the userbot account join every active source channel that has a
-    username. Fixes 'Could not resolve channel' for channels the account
-    was never subscribed to. Optional filter: /joinall лениногорск"""
+    """Make the userbot account (re)join every active source channel — by
+    @username when available, by its stored invite link otherwise. Guards
+    against routes existing in the DB without real membership: a public
+    channel resolves by username even if the join itself silently failed
+    (e.g. hit a flood wait), so a route can look fine while the account was
+    never actually admitted — this fixes that regardless of which one
+    happened. Optional filter: /joinall лениногорск"""
     import asyncio
     from app.telethon_client.client import telethon_client
     from app.services.channel_service import join_channel_link
@@ -704,12 +708,14 @@ async def cmd_joinall(message: Message) -> None:
         repo = ChannelRepository(session)
         sources = await repo.list_active_sources()
 
-    targets = [s for s in sources if s.username]
+    targets = [s for s in sources if s.username or s.invite_link]
+    no_link = [s for s in sources if not s.username and not s.invite_link]
     if query:
         targets = [s for s in targets if query in (s.username or "").lower() or query in (s.title or "").lower()]
+        no_link = [s for s in no_link if query in (s.title or "").lower()]
 
     if not targets:
-        await message.answer("Нет источников с username для вступления.")
+        await message.answer("Нет источников с username или сохранённой инвайт-ссылкой для вступления.")
         return
 
     await message.answer(f"🔗 Вступаю в <b>{len(targets)}</b> каналов, это займёт несколько минут...", parse_mode="HTML")
@@ -718,7 +724,8 @@ async def cmd_joinall(message: Message) -> None:
     failed = 0
     for s in targets:
         try:
-            ok = await join_channel_link(telethon_client, f"@{s.username}")
+            link = f"@{s.username}" if s.username else s.invite_link
+            ok = await join_channel_link(telethon_client, link)
             if ok:
                 joined += 1
             else:
@@ -730,11 +737,19 @@ async def cmd_joinall(message: Message) -> None:
     # Reset cursors so the next poll picks up recent posts from newly joined channels
     reset_last_seen()
 
-    await message.answer(
+    text = (
         f"✅ Готово!\n• Вступил/уже состоит: <b>{joined}</b>\n• Ошибок: <b>{failed}</b>\n\n"
-        f"Курсоры сброшены — посты пойдут в течение ~1 минуты.",
-        parse_mode="HTML",
+        f"Курсоры сброшены — посты пойдут в течение ~1 минуты."
     )
+    if no_link:
+        names = ", ".join((s.title or str(s.telegram_id)) for s in no_link[:15])
+        more = f" и ещё {len(no_link) - 15}" if len(no_link) > 15 else ""
+        text += (
+            f"\n\n⚠️ <b>{len(no_link)}</b> источников без username и без сохранённой "
+            f"инвайт-ссылки — вступить в них невозможно (ссылка была утеряна до этого "
+            f"фикса): {names}{more}"
+        )
+    await message.answer(text, parse_mode="HTML")
 
 
 @router.message(Command("addquick"))

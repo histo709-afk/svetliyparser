@@ -19,6 +19,10 @@ class SourceChannel(Base):
     telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, nullable=False)
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Persisted so a username-less (invite-only) channel can be re-joined
+    # later (e.g. /joinall after the account was removed) — without this,
+    # the invite hash used at add time is lost the moment the row is saved.
+    invite_link: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     added_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, nullable=False

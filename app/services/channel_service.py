@@ -165,11 +165,20 @@ async def add_source_channel(
     if info is None:
         raise ValueError(f"Не удалось найти канал по ссылке: {link}")
 
+    # Persist the invite link only when there's no username to fall back on —
+    # that's the only case where losing it would make the channel
+    # unrejoinable later (e.g. after the account gets removed).
+    normalized = parse_channel_link(link)
+    invite_link = f"https://t.me/{normalized}" if not info.username and normalized.startswith("+") else None
+
     repo = ChannelRepository(session)
     existing = await repo.get_source_by_telegram_id(info.telegram_id)
     if existing is not None:
         if not existing.is_active:
             existing.is_active = True
+            await session.flush()
+        if invite_link and not existing.invite_link:
+            existing.invite_link = invite_link
             await session.flush()
         return existing, False
 
@@ -177,6 +186,7 @@ async def add_source_channel(
         telegram_id=info.telegram_id,
         username=info.username,
         title=info.title,
+        invite_link=invite_link,
     )
     return channel, True
 
