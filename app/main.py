@@ -59,6 +59,7 @@ async def start_aiogram_bot() -> None:
     # before they've ever sent /start or received any message from the bot.
     await bot.set_my_commands([
         BotCommand(command="start", description="Открыть главное меню"),
+        BotCommand(command="newcity", description="Создать канал для нового города"),
         BotCommand(command="routes", description="Маршруты пересылки"),
         BotCommand(command="status", description="Статус системы"),
         BotCommand(command="logs", description="Последние ошибки"),
