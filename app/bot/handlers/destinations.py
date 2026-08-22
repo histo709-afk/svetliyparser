@@ -203,7 +203,7 @@ async def cmd_list_dests(message: Message) -> None:
                 link = invite.link
             except Exception as exc:
                 link = f"(не удалось получить ссылку: {str(exc)[:60]})"
-        lines.append(f"{status} <b>{name}</b>\n{link}")
+        lines.append(f"{status} <b>{name}</b>\nID: <code>{d.telegram_id}</code>\n{link}")
 
     text = "\n\n".join(lines)
     for i in range(0, len(text), 3500):
