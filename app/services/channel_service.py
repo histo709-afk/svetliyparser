@@ -95,7 +95,18 @@ async def resolve_channel(
             await _r.aclose()
             if cached:
                 telegram_id = int(cached)
-                return ChannelInfo(telegram_id=telegram_id, username=None, title=invite_hash)
+                # The cache only ever stored the ID, not a title — by this
+                # point the account has necessarily already joined (that's
+                # how the ID got cached), so get_entity by raw ID should
+                # resolve. Fetch the real title instead of falling back to
+                # the meaningless hash string.
+                real_title = invite_hash
+                try:
+                    cached_entity = await client.get_entity(telegram_id)
+                    real_title = getattr(cached_entity, "title", None) or invite_hash
+                except Exception:
+                    pass
+                return ChannelInfo(telegram_id=telegram_id, username=None, title=real_title)
         except Exception:
             pass
 

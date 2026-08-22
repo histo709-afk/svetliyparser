@@ -173,6 +173,13 @@ async def process_source_link_for_route(message: Message, state: FSMContext) -> 
 
 @router.message(Command("listdests"))
 async def cmd_list_dests(message: Message) -> None:
+    """List every destination with a real t.me link. Public channels use
+    their username directly; private ones (the common case — most
+    destinations are invite-only "Парсер X" channels) get a fresh invite
+    link exported live via the userbot, which is a member/admin of all of
+    them — no stored link needed."""
+    from telethon.tl.functions.messages import ExportChatInviteRequest
+
     async with async_session_factory() as session:
         repo = ChannelRepository(session)
         dests = await repo.list_all_destinations()
@@ -181,12 +188,68 @@ async def cmd_list_dests(message: Message) -> None:
         await message.answer("📭 Назначения не добавлены.", reply_markup=back_to_menu_keyboard())
         return
 
+    await message.answer(f"⏳ Собираю ссылки на {len(dests)} каналов...")
+
+    client = _get_telethon_client()
     lines = ["📋 <b>Назначения:</b>\n"]
     for d in dests:
         status = "✅" if d.is_active else "⏸"
-        lines.append(f"{status} {channel_display_name(d)}")
+        name = d.title or channel_display_name(d)
+        if d.username:
+            link = f"https://t.me/{d.username}"
+        else:
+            try:
+                invite = await client(ExportChatInviteRequest(peer=d.telegram_id))
+                link = invite.link
+            except Exception as exc:
+                link = f"(не удалось получить ссылку: {str(exc)[:60]})"
+        lines.append(f"{status} <b>{name}</b>\n{link}")
 
-    await message.answer("\n".join(lines), reply_markup=back_to_menu_keyboard(), parse_mode="HTML")
+    text = "\n\n".join(lines)
+    for i in range(0, len(text), 3500):
+        await message.answer(text[i:i + 3500], parse_mode="HTML", disable_web_page_preview=True)
+    await message.answer("Готово.", reply_markup=back_to_menu_keyboard())
+
+
+@router.message(Command("fixdesttitles"))
+async def cmd_fix_dest_titles(message: Message) -> None:
+    """Refresh every destination's stored title from its live Telethon
+    entity. Fixes rows created with a garbage title (the raw invite hash
+    instead of the real channel name) — a bug where a Redis-cached invite
+    lookup skipped fetching the actual title; now fixed going forward, but
+    existing rows created before the fix still need a one-time refresh."""
+    client = _get_telethon_client()
+
+    async with async_session_factory() as session:
+        repo = ChannelRepository(session)
+        dests = await repo.list_all_destinations()
+
+    updated = 0
+    failed = 0
+    async with async_session_factory() as session:
+        from sqlalchemy import select
+        from app.models.channel import DestinationChannel
+
+        for d in dests:
+            try:
+                entity = await client.get_entity(d.telegram_id)
+                real_title = getattr(entity, "title", None)
+                if real_title and real_title != d.title:
+                    result = await session.execute(
+                        select(DestinationChannel).where(DestinationChannel.id == d.id)
+                    )
+                    row = result.scalar_one_or_none()
+                    if row:
+                        row.title = real_title
+                        updated += 1
+            except Exception:
+                failed += 1
+        await session.commit()
+
+    await message.answer(
+        f"✅ Обновлено названий: <b>{updated}</b>\n⚠️ Не удалось получить: <b>{failed}</b>",
+        parse_mode="HTML",
+    )
 
 
 @router.message(Command("removedest"))
