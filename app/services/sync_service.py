@@ -281,6 +281,36 @@ async def handle_new_message(
         await _process_single_message(message, source_channel_id, telethon_client)
 
 
+async def _resolve_complete_album(
+    client: TelegramClient,
+    source_channel_id: int,
+    grouped_id: str,
+    messages: List[Message],
+) -> List[Message]:
+    """Push updates are unreliable and can drop or delay individual messages
+    of an album — most dangerously the one carrying the caption. Re-fetch the
+    messages around the buffered ids directly from Telegram (source of truth)
+    and keep only the ones that actually belong to this grouped_id, so we
+    never forward — and dedup-lock — an incomplete album."""
+    ids = [m.id for m in messages]
+    window = [i for i in range(min(ids) - 10, max(ids) + 11) if i > 0]
+    try:
+        fetched = await client.get_messages(source_channel_id, ids=window)
+    except Exception as exc:
+        log.warning("album_refetch_failed", group=grouped_id, error=str(exc))
+        return messages
+    complete = [
+        m for m in fetched
+        if m is not None and str(getattr(m, "grouped_id", None)) == grouped_id
+    ]
+    if len(complete) > len(messages):
+        log.info(
+            "album_refetch_recovered_messages",
+            group=grouped_id, buffered=len(messages), complete=len(complete),
+        )
+    return complete or messages
+
+
 async def _flush_album(
     key: Tuple[int, str],
     telethon_client: TelegramClient,
@@ -300,6 +330,9 @@ async def _flush_album(
     _in_flight_albums.add(claim_key)
     if len(_in_flight_albums) > 2000:
         _in_flight_albums.clear()
+
+    messages = await _resolve_complete_album(telethon_client, source_channel_id, grouped_id, messages)
+    messages = sorted(messages, key=lambda m: m.id)
 
     log.info(
         "flushing_album",
@@ -343,6 +376,16 @@ async def _flush_album(
 
             async def _forward_album_one(route):
                 dest = route.destination
+                caption = _album_caption(messages)
+                if await _is_banned(caption, route.id):
+                    log.info("album_banned", src=source_channel_id, group=grouped_id, dest=dest.telegram_id)
+                    return
+                if not await _passes_required_keywords(caption, route.id):
+                    log.info("album_missing_required_keyword", src=source_channel_id, group=grouped_id, dest=dest.telegram_id)
+                    return
+                caption = await _apply_replacements(caption, route.id)
+                if getattr(route, "strip_footer", False):
+                    caption = _strip_footer(caption)
                 reply_to = await _resolve_reply_to(
                     msg_repo, source_channel_id,
                     getattr(getattr(messages[0], "reply_to", None), "reply_to_msg_id", None),
@@ -350,6 +393,7 @@ async def _flush_album(
                 )
                 dest_ids = await send_album(
                     telethon_client, messages, dest.telegram_id,
+                    override_caption=caption,
                     reply_to_message_id=reply_to,
                 )
                 if not dest_ids:
