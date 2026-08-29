@@ -69,6 +69,36 @@ async def init_db() -> None:
             )
         )
 
+    await _seed_global_text_replacements()
+
+
+# One-off global text-replacement rules seeded on every startup. Requested
+# ad-signature strips that can't be found automatically (the link is a
+# hidden hyperlink entity, not literal URL text, so the URL-based footer
+# detector doesn't catch them) — added here rather than through the bot's
+# own UI because this session has no live access to run bot commands or
+# connect to the database directly. TextReplacementRepository.add() is
+# idempotent (skips an existing find_text/route_id/is_exception row), so
+# re-running this on every deploy is safe.
+_SEEDED_GLOBAL_REPLACEMENTS: list[tuple[str, str]] = [
+    ("📩 Заметил, где появился бензин? Напиши нам", ""),
+    (
+        "⛽️ Бак пустой, деньги в USDT? Необязательно сначала выводить их на "
+        "карту — есть кошелек Алтын",
+        "",
+    ),
+]
+
+
+async def _seed_global_text_replacements() -> None:
+    from app.repositories.text_replacement_repo import TextReplacementRepository
+
+    async with async_session_factory() as session:
+        repo = TextReplacementRepository(session)
+        for find_text, replace_with in _SEEDED_GLOBAL_REPLACEMENTS:
+            await repo.add(find_text, replace_with, route_id=None)
+        await session.commit()
+
 
 @asynccontextmanager
 async def get_session() -> AsyncGenerator[AsyncSession, None]:

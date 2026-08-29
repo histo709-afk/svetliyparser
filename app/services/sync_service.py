@@ -71,10 +71,23 @@ _SIGNATURE_RE = _re.compile(
 # paragraphs even when the ad's link is a hyperlink entity (no literal URL
 # in plain text, so _URL_RE alone wouldn't catch it).
 _AD_MARKER_RE = _re.compile(r'\(\s*реклама\s*\)', _re.IGNORECASE)
+# A "____" divider line is commonly used to separate real content from an
+# appended ad block. Treating it as a footer paragraph strips everything
+# from the divider onward, which stays correct even if the ad text/link
+# behind it changes or rotates later — no rule update needed.
+_DIVIDER_RE = _re.compile(r'^_{3,}$')
 
 
 def _is_footer_paragraph(p: str) -> bool:
-    return bool(_URL_RE.search(p) or _SIGNATURE_RE.search(p) or _AD_MARKER_RE.search(p))
+    if not p.strip():
+        # An empty paragraph is what a footer looks like after a text
+        # replacement rule has already emptied out its content — keep
+        # stripping trailing blanks instead of leaving stray blank lines.
+        return True
+    return bool(
+        _URL_RE.search(p) or _SIGNATURE_RE.search(p)
+        or _AD_MARKER_RE.search(p) or _DIVIDER_RE.match(p.strip())
+    )
 
 
 def _strip_footer(text: str) -> str:
