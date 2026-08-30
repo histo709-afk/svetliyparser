@@ -6,6 +6,7 @@ from typing import List, Optional
 import structlog
 from aiogram import Bot
 from aiogram.types import BufferedInputFile, InputMediaPhoto, InputMediaVideo
+from aiogram.types import MessageEntity as AiogramMessageEntity
 
 log = structlog.get_logger(__name__)
 
@@ -27,6 +28,56 @@ def _truncate_caption(text: Optional[str]) -> Optional[str]:
     return text[:CAPTION_LIMIT - 1].rstrip() + "…"
 
 
+# Telethon entity class name -> Bot API entity type. Types needing extra
+# Telegram objects we don't carry over here (text_mention's full User,
+# custom_emoji's document id) are simply skipped rather than guessed at.
+_ENTITY_TYPE_MAP = {
+    "MessageEntityBold": "bold",
+    "MessageEntityItalic": "italic",
+    "MessageEntityUnderline": "underline",
+    "MessageEntityStrike": "strikethrough",
+    "MessageEntitySpoiler": "spoiler",
+    "MessageEntityCode": "code",
+    "MessageEntityUrl": "url",
+    "MessageEntityMention": "mention",
+    "MessageEntityHashtag": "hashtag",
+    "MessageEntityCashtag": "cashtag",
+    "MessageEntityBotCommand": "bot_command",
+    "MessageEntityEmail": "email",
+    "MessageEntityPhone": "phone_number",
+    "MessageEntityBlockquote": "blockquote",
+}
+
+
+def convert_entities(telethon_entities, cutoff: int) -> Optional[List[AiogramMessageEntity]]:
+    """Convert Telethon formatting entities to aiogram's MessageEntity,
+    keeping only those that fit entirely within the surviving text (offsets
+    are UTF-16 code units, matching Telegram's own convention, so a plain
+    Python len() cutoff would be wrong whenever the kept text contains
+    emoji/astral characters — cutoff must already be computed the same
+    surrogate-aware way, see sync_service's use of add_surrogate)."""
+    if not telethon_entities:
+        return None
+    result: List[AiogramMessageEntity] = []
+    for e in telethon_entities:
+        if e.offset + e.length > cutoff:
+            continue
+        cls_name = type(e).__name__
+        if cls_name == "MessageEntityTextUrl":
+            result.append(AiogramMessageEntity(type="text_link", offset=e.offset, length=e.length, url=e.url))
+            continue
+        if cls_name == "MessageEntityPre":
+            result.append(AiogramMessageEntity(
+                type="pre", offset=e.offset, length=e.length,
+                language=getattr(e, "language", None) or None,
+            ))
+            continue
+        bot_type = _ENTITY_TYPE_MAP.get(cls_name)
+        if bot_type:
+            result.append(AiogramMessageEntity(type=bot_type, offset=e.offset, length=e.length))
+    return result or None
+
+
 
 async def send_message(
     client,
@@ -34,14 +85,18 @@ async def send_message(
     dest_channel_id: int,
     override_text: Optional[str] = None,
     reply_to_message_id: Optional[int] = None,
+    entities: Optional[List[AiogramMessageEntity]] = None,
 ) -> Optional[int]:
     """Copy a single message (text / photo / video) to dest via Bot API.
     Falls back to sending without the reply link if the replied-to message
-    is gone (deleted/invalid) so a stale thread link never blocks the post."""
-    result = await _send_message_impl(client, message, dest_channel_id, override_text, reply_to_message_id)
+    is gone (deleted/invalid) so a stale thread link never blocks the post.
+    `entities` (already converted + cutoff-filtered by the caller) preserves
+    formatting/hyperlinks from the source post — pass None to send as plain
+    text (the caller's job to decide when offsets are still valid)."""
+    result = await _send_message_impl(client, message, dest_channel_id, override_text, reply_to_message_id, entities)
     if result is None and reply_to_message_id is not None:
         log.warning("send_message_reply_fallback", dest=dest_channel_id, msg_id=message.id)
-        result = await _send_message_impl(client, message, dest_channel_id, override_text, None)
+        result = await _send_message_impl(client, message, dest_channel_id, override_text, None, entities)
     return result
 
 
@@ -51,8 +106,15 @@ async def _send_message_impl(
     dest_channel_id: int,
     override_text: Optional[str],
     reply_to_message_id: Optional[int],
+    entities: Optional[List[AiogramMessageEntity]] = None,
 ) -> Optional[int]:
     bot = _get_bot()
+    # Entities and parse_mode are mutually exclusive on Telegram's side —
+    # explicitly clear the bot's default (HTML) parse mode whenever real
+    # entities are supplied, otherwise Bot API would try to HTML-parse the
+    # plain text (mangling any literal <, >, & in it) instead of honoring
+    # the entities.
+    parse_mode = None if entities else "HTML"
     try:
         text = override_text if override_text is not None else (message.message or message.text or "")
         media = getattr(message, "media", None)
@@ -62,6 +124,8 @@ async def _send_message_impl(
                 chat_id=dest_channel_id,
                 text=text or ".",
                 reply_to_message_id=reply_to_message_id,
+                entities=entities,
+                parse_mode=parse_mode,
             )
             return result.message_id
 
@@ -73,6 +137,8 @@ async def _send_message_impl(
                 chat_id=dest_channel_id,
                 photo=BufferedInputFile(data, "photo.jpg"),
                 caption=_truncate_caption(text) or None,
+                caption_entities=entities,
+                parse_mode=parse_mode,
                 reply_to_message_id=reply_to_message_id,
             )
             return result.message_id
@@ -90,6 +156,8 @@ async def _send_message_impl(
                     chat_id=dest_channel_id,
                     video=BufferedInputFile(data, filename or "video.mp4"),
                     caption=_truncate_caption(text) or None,
+                    caption_entities=entities,
+                    parse_mode=parse_mode,
                     reply_to_message_id=reply_to_message_id,
                 )
             else:
@@ -97,6 +165,8 @@ async def _send_message_impl(
                     chat_id=dest_channel_id,
                     document=BufferedInputFile(data, filename or "file"),
                     caption=_truncate_caption(text) or None,
+                    caption_entities=entities,
+                    parse_mode=parse_mode,
                     reply_to_message_id=reply_to_message_id,
                 )
             return result.message_id
@@ -108,6 +178,8 @@ async def _send_message_impl(
                 chat_id=dest_channel_id,
                 document=BufferedInputFile(data, "file"),
                 caption=_truncate_caption(text) or None,
+                caption_entities=entities,
+                parse_mode=parse_mode,
                 reply_to_message_id=reply_to_message_id,
             )
             return result.message_id
@@ -115,6 +187,7 @@ async def _send_message_impl(
         if text:
             result = await bot.send_message(
                 chat_id=dest_channel_id, text=text, reply_to_message_id=reply_to_message_id,
+                entities=entities, parse_mode=parse_mode,
             )
             return result.message_id
 

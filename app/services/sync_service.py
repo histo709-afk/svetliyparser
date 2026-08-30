@@ -8,13 +8,34 @@ import structlog
 from telethon import TelegramClient
 from telethon.tl.types import Message
 
+from telethon.helpers import add_surrogate
+
 from app.database import async_session_factory
 from app.repositories.channel_repo import ChannelRepository
 from app.repositories.message_repo import MessageRepository
 from app.repositories.route_repo import RouteRepository
-from app.services.forwarder import send_album, send_message
+from app.services.forwarder import convert_entities, send_album, send_message
 
 log = structlog.get_logger(__name__)
+
+
+def _entities_for_kept_text(message: Message, original_text: str, final_text: str):
+    """Preserve formatting/hyperlinks (e.g. a "Проложить маршрут" map link)
+    whenever the final text is still an exact prefix of the original —
+    which covers the common case of strip_footer cutting a trailing chunk
+    off untouched content. If anything upstream (a replacement rule, or
+    even just _apply_replacements' own emoji/NBSP normalization) altered
+    the surviving text at all, this check correctly fails and forwarding
+    falls back to plain text rather than risk misaligned/invalid entities.
+    Offsets are UTF-16 code units (Telegram's own convention) — add_surrogate
+    makes Python's len() count them the same way a plain Python string
+    length would not whenever the text contains emoji/astral characters."""
+    if not getattr(message, "entities", None):
+        return None
+    if not final_text or not original_text.startswith(final_text):
+        return None
+    cutoff = len(add_surrogate(final_text))
+    return convert_entities(message.entities, cutoff)
 
 
 async def _resolve_reply_to(
@@ -92,13 +113,21 @@ def _is_footer_paragraph(p: str) -> bool:
 
 def _strip_footer(text: str) -> str:
     """Remove trailing paragraph(s) that look like an ad signature (URL/@mention)
-    or a per-post author signature (Name · N мин назад)."""
+    or a per-post author signature (Name · N мин назад). A "____" divider
+    line is treated as a hard marker: everything from it to the end of the
+    post is dropped regardless of what the ad text itself says, since that
+    wording is known to rotate between posts (a fixed find/replace rule
+    would only catch one variant and miss the next)."""
     if not text:
         return text
     paragraphs = text.split("\n\n")
     if len(paragraphs) <= 1:
         # Try splitting by single newline as last resort
         lines = text.split("\n")
+        for i in range(len(lines) - 1, -1, -1):
+            if _DIVIDER_RE.match(lines[i].strip()):
+                lines = lines[:i]
+                break
         while len(lines) > 1:
             last = lines[-1].strip()
             if not _is_footer_paragraph(last):
@@ -110,6 +139,11 @@ def _strip_footer(text: str) -> str:
             if _AD_MARKER_RE.fullmatch(last) and len(lines) > 1:
                 lines = lines[:-1]
         return "\n".join(lines).rstrip()
+
+    for i in range(len(paragraphs) - 1, -1, -1):
+        if _DIVIDER_RE.match(paragraphs[i].strip()):
+            paragraphs = paragraphs[:i]
+            break
     while len(paragraphs) > 1 and _is_footer_paragraph(paragraphs[-1].strip()):
         paragraphs = paragraphs[:-1]
     return "\n\n".join(paragraphs).rstrip()
@@ -484,9 +518,11 @@ async def _process_single_message(
                 if not await _passes_required_keywords(msg_text, route.id):
                     log.info("message_missing_required_keyword", src=source_channel_id, msg=message.id, dest=dest.telegram_id)
                     return
+                original_text = msg_text
                 msg_text = await _apply_replacements(msg_text, route.id)
                 if getattr(route, "strip_footer", False):
                     msg_text = _strip_footer(msg_text)
+                entities = _entities_for_kept_text(message, original_text, msg_text)
                 reply_to = await _resolve_reply_to(
                     msg_repo, source_channel_id,
                     getattr(getattr(message, "reply_to", None), "reply_to_msg_id", None),
@@ -495,7 +531,7 @@ async def _process_single_message(
                 log.info("sending_message", src=source_channel_id, msg=message.id, dest=dest.telegram_id)
                 dest_msg_id = await send_message(
                     telethon_client, message, dest.telegram_id, override_text=msg_text,
-                    reply_to_message_id=reply_to,
+                    reply_to_message_id=reply_to, entities=entities,
                 )
                 if dest_msg_id is None:
                     err = f"Forward failed: src_channel={source_channel_id} src_msg={message.id} dest={dest.telegram_id}"
