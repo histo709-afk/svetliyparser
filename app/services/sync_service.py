@@ -99,6 +99,19 @@ _AD_MARKER_RE = _re.compile(r'\(\s*реклама\s*\)', _re.IGNORECASE)
 _DIVIDER_RE = _re.compile(r'^_{3,}$')
 
 
+def _paragraph_is_or_starts_with_divider(p: str) -> bool:
+    """A source sometimes glues the divider and the ad text into one
+    "\n\n"-delimited paragraph with only a single newline between them
+    (divider\nad text), instead of giving the divider its own paragraph —
+    checking just the first line catches that case too, so the whole
+    paragraph (divider + whatever ad copy follows it) gets dropped."""
+    stripped = p.strip()
+    if _DIVIDER_RE.match(stripped):
+        return True
+    first_line = stripped.split("\n", 1)[0].strip()
+    return bool(_DIVIDER_RE.match(first_line))
+
+
 def _is_footer_paragraph(p: str) -> bool:
     if not p.strip():
         # An empty paragraph is what a footer looks like after a text
@@ -141,7 +154,7 @@ def _strip_footer(text: str) -> str:
         return "\n".join(lines).rstrip()
 
     for i in range(len(paragraphs) - 1, -1, -1):
-        if _DIVIDER_RE.match(paragraphs[i].strip()):
+        if _paragraph_is_or_starts_with_divider(paragraphs[i]):
             paragraphs = paragraphs[:i]
             break
     while len(paragraphs) > 1 and _is_footer_paragraph(paragraphs[-1].strip()):
