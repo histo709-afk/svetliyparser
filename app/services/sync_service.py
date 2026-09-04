@@ -264,14 +264,22 @@ async def _apply_replacements(
     for find_text, replace_with in rules:
         if not find_text:
             continue
+        # find_text/replace_with come straight from the DB as normal Python
+        # strings — most emoji used in these ad phrases (📩, 📌, etc.) are
+        # astral characters that add_surrogate() turns into surrogate PAIRS
+        # in `stext`, so they must be surrogate-encoded the same way before
+        # comparing/substituting, or an exact match (and the regex fallback
+        # built from the un-encoded text) would never fire.
+        find_s = add_surrogate(find_text)
+        replace_s = add_surrogate(replace_with) if replace_with else replace_with
         before = stext
-        if find_text in stext:
-            stext = stext.replace(find_text, replace_with)
+        if find_s in stext:
+            stext = stext.replace(find_s, replace_s)
         else:
-            pattern = _flexible_pattern(find_text)
+            pattern = _flexible_pattern(find_s)
             if pattern is None:
                 continue
-            stext = pattern.sub(lambda m, r=replace_with: r, stext)
+            stext = pattern.sub(lambda m, r=replace_s: r, stext)
         if stext != before:
             sentities = _remap_entities_after_edit(sentities, before, stext)
     return del_surrogate(stext), sentities
