@@ -14,7 +14,7 @@ from app.database import async_session_factory
 from app.repositories.channel_repo import ChannelRepository
 from app.repositories.message_repo import MessageRepository
 from app.repositories.route_repo import RouteRepository
-from app.services.forwarder import convert_entities, send_album, send_message
+from app.services.forwarder import convert_entities, convert_reply_markup, send_album, send_message
 
 log = structlog.get_logger(__name__)
 
@@ -562,6 +562,7 @@ async def _process_single_message(
                 dest_msg_id = await send_message(
                     telethon_client, message, dest.telegram_id, override_text=msg_text,
                     reply_to_message_id=reply_to, entities=entities,
+                    reply_markup=convert_reply_markup(getattr(message, "reply_markup", None)),
                 )
                 if dest_msg_id is None:
                     err = f"Forward failed: src_channel={source_channel_id} src_msg={message.id} dest={dest.telegram_id}"

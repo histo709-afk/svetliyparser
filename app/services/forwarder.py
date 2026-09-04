@@ -6,6 +6,7 @@ from typing import List, Optional
 import structlog
 from aiogram import Bot
 from aiogram.types import BufferedInputFile, InputMediaPhoto, InputMediaVideo
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.types import MessageEntity as AiogramMessageEntity
 
 log = structlog.get_logger(__name__)
@@ -79,6 +80,30 @@ def convert_entities(telethon_entities, cutoff: int) -> Optional[List[AiogramMes
 
 
 
+def convert_reply_markup(telethon_reply_markup) -> Optional[InlineKeyboardMarkup]:
+    """Convert a Telethon inline keyboard (e.g. a "Проложить маршрут" map-link
+    button) to aiogram's InlineKeyboardMarkup. Many source posts put their
+    hyperlink on a URL button rather than as a text formatting entity, so
+    without this the link is silently dropped even though the caption text
+    (e.g. "Проложить маршрут") still gets copied — only url buttons are kept,
+    since callback/login/other button types wouldn't work pointed at a
+    different bot anyway."""
+    rows = getattr(telethon_reply_markup, "rows", None)
+    if not rows:
+        return None
+    keyboard: List[List[InlineKeyboardButton]] = []
+    for row in rows:
+        buttons = []
+        for btn in getattr(row, "buttons", None) or []:
+            url = getattr(btn, "url", None)
+            text = getattr(btn, "text", None)
+            if url and text:
+                buttons.append(InlineKeyboardButton(text=text, url=url))
+        if buttons:
+            keyboard.append(buttons)
+    return InlineKeyboardMarkup(inline_keyboard=keyboard) if keyboard else None
+
+
 async def send_message(
     client,
     message,
@@ -86,6 +111,7 @@ async def send_message(
     override_text: Optional[str] = None,
     reply_to_message_id: Optional[int] = None,
     entities: Optional[List[AiogramMessageEntity]] = None,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
 ) -> Optional[int]:
     """Copy a single message (text / photo / video) to dest via Bot API.
     Falls back to sending without the reply link if the replied-to message
@@ -93,10 +119,10 @@ async def send_message(
     `entities` (already converted + cutoff-filtered by the caller) preserves
     formatting/hyperlinks from the source post — pass None to send as plain
     text (the caller's job to decide when offsets are still valid)."""
-    result = await _send_message_impl(client, message, dest_channel_id, override_text, reply_to_message_id, entities)
+    result = await _send_message_impl(client, message, dest_channel_id, override_text, reply_to_message_id, entities, reply_markup)
     if result is None and reply_to_message_id is not None:
         log.warning("send_message_reply_fallback", dest=dest_channel_id, msg_id=message.id)
-        result = await _send_message_impl(client, message, dest_channel_id, override_text, None, entities)
+        result = await _send_message_impl(client, message, dest_channel_id, override_text, None, entities, reply_markup)
     return result
 
 
@@ -107,6 +133,7 @@ async def _send_message_impl(
     override_text: Optional[str],
     reply_to_message_id: Optional[int],
     entities: Optional[List[AiogramMessageEntity]] = None,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
 ) -> Optional[int]:
     bot = _get_bot()
     # Entities and parse_mode are mutually exclusive on Telegram's side —
@@ -126,6 +153,7 @@ async def _send_message_impl(
                 reply_to_message_id=reply_to_message_id,
                 entities=entities,
                 parse_mode=parse_mode,
+                reply_markup=reply_markup,
             )
             return result.message_id
 
@@ -140,6 +168,7 @@ async def _send_message_impl(
                 caption_entities=entities,
                 parse_mode=parse_mode,
                 reply_to_message_id=reply_to_message_id,
+                reply_markup=reply_markup,
             )
             return result.message_id
 
@@ -159,6 +188,7 @@ async def _send_message_impl(
                     caption_entities=entities,
                     parse_mode=parse_mode,
                     reply_to_message_id=reply_to_message_id,
+                    reply_markup=reply_markup,
                 )
             else:
                 result = await bot.send_document(
@@ -168,6 +198,7 @@ async def _send_message_impl(
                     caption_entities=entities,
                     parse_mode=parse_mode,
                     reply_to_message_id=reply_to_message_id,
+                    reply_markup=reply_markup,
                 )
             return result.message_id
 
@@ -181,13 +212,14 @@ async def _send_message_impl(
                 caption_entities=entities,
                 parse_mode=parse_mode,
                 reply_to_message_id=reply_to_message_id,
+                reply_markup=reply_markup,
             )
             return result.message_id
 
         if text:
             result = await bot.send_message(
                 chat_id=dest_channel_id, text=text, reply_to_message_id=reply_to_message_id,
-                entities=entities, parse_mode=parse_mode,
+                entities=entities, parse_mode=parse_mode, reply_markup=reply_markup,
             )
             return result.message_id
 
