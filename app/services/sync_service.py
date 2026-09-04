@@ -205,26 +205,43 @@ def _album_caption(messages: List[Message]) -> str:
 
 
 async def _apply_replacements(text: str, route_id: int) -> str:
-    """Apply text replacement rules (global + route-specific) to message text."""
+    """Apply text replacement rules (global + route-specific) to message text.
+    Returns the ORIGINAL text byte-for-byte, without even the emoji/NBSP
+    normalization pass, whenever nothing actually matched — routes with no
+    configured rules (or whose rules just don't match this particular post)
+    are the common case, and _entities_for_kept_text's "final text is a
+    prefix of the original" check needs the untouched original to succeed,
+    to keep hyperlinks (e.g. a "Проложить маршрут" map link) working.
+    Normalizing unconditionally, even when no rule ends up matching, was
+    silently defeating that check on almost every real post (they're full
+    of emoji variation selectors)."""
     if not text:
         return text
     from app.repositories.text_replacement_repo import TextReplacementRepository
     async with async_session_factory() as session:
         repo = TextReplacementRepository(session)
         rules = await repo.get_for_apply(route_id)
+    if not rules:
+        return text
 
-    text = _normalize_for_match(text)
+    normalized = _normalize_for_match(text)
+    result = normalized
+    changed = False
     for find_text, replace_with in rules:
         if not find_text:
             continue
         find_norm = _normalize_for_match(find_text)
-        if find_norm in text:
-            text = text.replace(find_norm, replace_with)
+        if find_norm in result:
+            result = result.replace(find_norm, replace_with)
+            changed = True
             continue
         pattern = _flexible_pattern(find_text)
         if pattern is not None:
-            text = pattern.sub(lambda m, r=replace_with: r, text)
-    return text
+            new_result = pattern.sub(lambda m, r=replace_with: r, result)
+            if new_result != result:
+                changed = True
+            result = new_result
+    return result if changed else text
 
 
 def _channel_link(chat_id: int, msg_id: int) -> str:
