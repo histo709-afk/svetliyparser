@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import difflib
 from typing import Dict, List, Optional, Tuple
 
 import structlog
 from telethon import TelegramClient
 from telethon.tl.types import Message
 
-from telethon.helpers import add_surrogate
+from telethon.helpers import add_surrogate, del_surrogate
 
 from app.database import async_session_factory
 from app.repositories.channel_repo import ChannelRepository
@@ -19,23 +21,45 @@ from app.services.forwarder import convert_entities, convert_reply_markup, send_
 log = structlog.get_logger(__name__)
 
 
-def _entities_for_kept_text(message: Message, original_text: str, final_text: str):
-    """Preserve formatting/hyperlinks (e.g. a "Проложить маршрут" map link)
-    whenever the final text is still an exact prefix of the original —
-    which covers the common case of strip_footer cutting a trailing chunk
-    off untouched content. If anything upstream (a replacement rule, or
-    even just _apply_replacements' own emoji/NBSP normalization) altered
-    the surviving text at all, this check correctly fails and forwarding
-    falls back to plain text rather than risk misaligned/invalid entities.
-    Offsets are UTF-16 code units (Telegram's own convention) — add_surrogate
-    makes Python's len() count them the same way a plain Python string
-    length would not whenever the text contains emoji/astral characters."""
-    if not getattr(message, "entities", None):
-        return None
-    if not final_text or not original_text.startswith(final_text):
-        return None
-    cutoff = len(add_surrogate(final_text))
-    return convert_entities(message.entities, cutoff)
+def _remap_entities_after_edit(entities: list, before: str, after: str) -> list:
+    """Recompute entity offsets/lengths after `before` (a UTF-16-code-unit
+    string, i.e. already passed through telethon.helpers.add_surrogate) was
+    rewritten into `after` by a text-replacement rule or footer stripping.
+    Entities lying entirely inside a region the edit didn't touch are kept
+    (with their offset shifted to match); an entity that overlaps an edited
+    region at all is dropped rather than risk sending a corrupted/misaligned
+    hyperlink. This lets a mid-text ad-phrase removal, or a trailing footer
+    cut, coexist with preserving an untouched hyperlink elsewhere in the
+    same post (e.g. a "Проложить маршрут" map link near the end) — the
+    previous approach required the ENTIRE text to be byte-identical after
+    every step, which silently dropped every entity as soon as any rule
+    matched anywhere in the message."""
+    if not entities:
+        return entities
+    if before == after:
+        return entities
+    opcodes = difflib.SequenceMatcher(None, before, after, autojunk=False).get_opcodes()
+    kept = []
+    for e in entities:
+        e0, e1 = e.offset, e.offset + e.length
+        shift = None
+        drop = False
+        for tag, i1, i2, j1, j2 in opcodes:
+            if tag == "equal":
+                if i1 <= e0 and e1 <= i2:
+                    shift = j1 - i1
+                    break
+                continue
+            if i2 <= e0 or i1 >= e1:
+                continue
+            drop = True
+            break
+        if drop or shift is None:
+            continue
+        new_e = copy.copy(e)
+        new_e.offset = e.offset + shift
+        kept.append(new_e)
+    return kept
 
 
 async def _resolve_reply_to(
@@ -172,8 +196,13 @@ def _normalize_for_match(s: str) -> str:
 
 
 def _flexible_pattern(find_text: str) -> "_re.Pattern | None":
-    """Build a regex that tolerates whitespace-run and dash-style differences
-    between the saved rule and the actual message text."""
+    """Build a regex that tolerates whitespace-run, dash-style and emoji
+    variation-selector differences between the saved rule and the actual
+    message text — matched directly against the UNMODIFIED message text
+    (whitespace \\s already matches NBSP under Python's Unicode regex, and
+    \\ufe0f? is allowed after every character), so a rule can be located and
+    replaced without ever normalizing/mutating the surrounding text that
+    isn't part of the match."""
     norm = _normalize_for_match(find_text).strip()
     if not norm:
         return None
@@ -182,10 +211,14 @@ def _flexible_pattern(find_text: str) -> "_re.Pattern | None":
         return None
     escaped_tokens = []
     for t in tokens:
-        e = _re.escape(t)
-        # allow any dash variant where the rule used a plain hyphen
-        e = e.replace(_re.escape("-"), f"[{_re.escape(_DASH_CHARS)}]")
-        escaped_tokens.append(e)
+        chars = []
+        for ch in t:
+            if ch in _DASH_CHARS:
+                e = f"[{_re.escape(_DASH_CHARS)}]"
+            else:
+                e = _re.escape(ch)
+            chars.append(e + r"️?")
+        escaped_tokens.append("".join(chars))
     pattern_str = r"\s+".join(escaped_tokens)
     try:
         return _re.compile(pattern_str)
@@ -204,44 +237,44 @@ def _album_caption(messages: List[Message]) -> str:
     return ""
 
 
-async def _apply_replacements(text: str, route_id: int) -> str:
+async def _apply_replacements(
+    text: str, route_id: int, entities: Optional[list] = None
+) -> Tuple[str, list]:
     """Apply text replacement rules (global + route-specific) to message text.
-    Returns the ORIGINAL text byte-for-byte, without even the emoji/NBSP
-    normalization pass, whenever nothing actually matched — routes with no
-    configured rules (or whose rules just don't match this particular post)
-    are the common case, and _entities_for_kept_text's "final text is a
-    prefix of the original" check needs the untouched original to succeed,
-    to keep hyperlinks (e.g. a "Проложить маршрут" map link) working.
-    Normalizing unconditionally, even when no rule ends up matching, was
-    silently defeating that check on almost every real post (they're full
-    of emoji variation selectors)."""
+    Matches directly against the ORIGINAL text (never a globally-normalized
+    copy of it — _flexible_pattern itself tolerates whitespace/dash/emoji-
+    variation-selector differences), so only the actually-matched span of
+    text is ever touched. After each rule's edit, formatting/hyperlink
+    entities are recomputed via _remap_entities_after_edit: entities inside
+    an untouched region survive (shifted to match), only ones overlapping
+    the edited span are dropped — so an ad-phrase replacement earlier in
+    the post no longer silently kills an untouched hyperlink elsewhere
+    (e.g. a "Проложить маршрут" map link) later in the same message."""
     if not text:
-        return text
+        return text, entities or []
     from app.repositories.text_replacement_repo import TextReplacementRepository
     async with async_session_factory() as session:
         repo = TextReplacementRepository(session)
         rules = await repo.get_for_apply(route_id)
     if not rules:
-        return text
+        return text, entities or []
 
-    normalized = _normalize_for_match(text)
-    result = normalized
-    changed = False
+    stext = add_surrogate(text)
+    sentities = list(entities or [])
     for find_text, replace_with in rules:
         if not find_text:
             continue
-        find_norm = _normalize_for_match(find_text)
-        if find_norm in result:
-            result = result.replace(find_norm, replace_with)
-            changed = True
-            continue
-        pattern = _flexible_pattern(find_text)
-        if pattern is not None:
-            new_result = pattern.sub(lambda m, r=replace_with: r, result)
-            if new_result != result:
-                changed = True
-            result = new_result
-    return result if changed else text
+        before = stext
+        if find_text in stext:
+            stext = stext.replace(find_text, replace_with)
+        else:
+            pattern = _flexible_pattern(find_text)
+            if pattern is None:
+                continue
+            stext = pattern.sub(lambda m, r=replace_with: r, stext)
+        if stext != before:
+            sentities = _remap_entities_after_edit(sentities, before, stext)
+    return del_surrogate(stext), sentities
 
 
 def _channel_link(chat_id: int, msg_id: int) -> str:
@@ -447,7 +480,7 @@ async def _flush_album(
                 if not await _passes_required_keywords(caption, route.id):
                     log.info("album_missing_required_keyword", src=source_channel_id, group=grouped_id, dest=dest.telegram_id)
                     return
-                caption = await _apply_replacements(caption, route.id)
+                caption, _unused_entities = await _apply_replacements(caption, route.id)
                 if getattr(route, "strip_footer", False):
                     caption = _strip_footer(caption)
                 reply_to = await _resolve_reply_to(
@@ -548,11 +581,14 @@ async def _process_single_message(
                 if not await _passes_required_keywords(msg_text, route.id):
                     log.info("message_missing_required_keyword", src=source_channel_id, msg=message.id, dest=dest.telegram_id)
                     return
-                original_text = msg_text
-                msg_text = await _apply_replacements(msg_text, route.id)
+                raw_entities = list(getattr(message, "entities", None) or [])
+                msg_text, kept_entities = await _apply_replacements(msg_text, route.id, entities=raw_entities)
                 if getattr(route, "strip_footer", False):
-                    msg_text = _strip_footer(msg_text)
-                entities = _entities_for_kept_text(message, original_text, msg_text)
+                    before_strip = add_surrogate(msg_text)
+                    stripped = _strip_footer(msg_text)
+                    kept_entities = _remap_entities_after_edit(kept_entities, before_strip, add_surrogate(stripped))
+                    msg_text = stripped
+                entities = convert_entities(kept_entities, len(add_surrogate(msg_text))) if kept_entities else None
                 reply_to = await _resolve_reply_to(
                     msg_repo, source_channel_id,
                     getattr(getattr(message, "reply_to", None), "reply_to_msg_id", None),
@@ -798,7 +834,7 @@ async def _process_album_poll(
                 if not await _passes_required_keywords(first_text, route.id):
                     log.info("album_missing_required_keyword", src=source_channel_id, group=grouped_id, dest=dest.telegram_id)
                     return
-                first_text = await _apply_replacements(first_text, route.id)
+                first_text, _unused_entities = await _apply_replacements(first_text, route.id)
                 if getattr(route, "strip_footer", False):
                     first_text = _strip_footer(first_text)
                 reply_to = await _resolve_reply_to(
