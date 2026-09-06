@@ -29,6 +29,27 @@ def _truncate_caption(text: Optional[str]) -> Optional[str]:
     return text[:CAPTION_LIMIT - 1].rstrip() + "…"
 
 
+def _utf16_len(text: str) -> int:
+    """Length in UTF-16 code units — the unit Telegram entity offsets use,
+    which differs from len() for any text containing emoji/astral chars."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _clip_entities(
+    entities: Optional[List[AiogramMessageEntity]], text: Optional[str]
+) -> Optional[List[AiogramMessageEntity]]:
+    """Drop entities that no longer fit the text actually being sent.
+    Required because _truncate_caption() shortens over-long captions while
+    the entities were computed against the full text — Telegram then rejects
+    the whole send with "entity begins after the end of the text", losing
+    the post entirely."""
+    if not entities or not text:
+        return None
+    limit = _utf16_len(text)
+    kept = [e for e in entities if e.offset + e.length <= limit]
+    return kept or None
+
+
 # Telethon entity class name -> Bot API entity type. Types needing extra
 # Telegram objects we don't carry over here (text_mention's full User,
 # custom_emoji's document id) are simply skipped rather than guessed at.
@@ -145,13 +166,18 @@ async def _send_message_impl(
     try:
         text = override_text if override_text is not None else (message.message or message.text or "")
         media = getattr(message, "media", None)
+        # A caption may get shortened to Telegram's 1024-char media limit,
+        # so entities must be filtered against what is actually sent.
+        caption = _truncate_caption(text) or None
+        cap_entities = _clip_entities(entities, caption)
+        text_entities = _clip_entities(entities, text)
 
         if media is None:
             result = await bot.send_message(
                 chat_id=dest_channel_id,
                 text=text or ".",
                 reply_to_message_id=reply_to_message_id,
-                entities=entities,
+                entities=text_entities,
                 parse_mode=parse_mode,
                 reply_markup=reply_markup,
             )
@@ -164,8 +190,8 @@ async def _send_message_impl(
             result = await bot.send_photo(
                 chat_id=dest_channel_id,
                 photo=BufferedInputFile(data, "photo.jpg"),
-                caption=_truncate_caption(text) or None,
-                caption_entities=entities,
+                caption=caption,
+                caption_entities=cap_entities,
                 parse_mode=parse_mode,
                 reply_to_message_id=reply_to_message_id,
                 reply_markup=reply_markup,
@@ -184,8 +210,8 @@ async def _send_message_impl(
                 result = await bot.send_video(
                     chat_id=dest_channel_id,
                     video=BufferedInputFile(data, filename or "video.mp4"),
-                    caption=_truncate_caption(text) or None,
-                    caption_entities=entities,
+                    caption=caption,
+                    caption_entities=cap_entities,
                     parse_mode=parse_mode,
                     reply_to_message_id=reply_to_message_id,
                     reply_markup=reply_markup,
@@ -194,8 +220,8 @@ async def _send_message_impl(
                 result = await bot.send_document(
                     chat_id=dest_channel_id,
                     document=BufferedInputFile(data, filename or "file"),
-                    caption=_truncate_caption(text) or None,
-                    caption_entities=entities,
+                    caption=caption,
+                    caption_entities=cap_entities,
                     parse_mode=parse_mode,
                     reply_to_message_id=reply_to_message_id,
                     reply_markup=reply_markup,
@@ -208,8 +234,8 @@ async def _send_message_impl(
             result = await bot.send_document(
                 chat_id=dest_channel_id,
                 document=BufferedInputFile(data, "file"),
-                caption=_truncate_caption(text) or None,
-                caption_entities=entities,
+                caption=caption,
+                caption_entities=cap_entities,
                 parse_mode=parse_mode,
                 reply_to_message_id=reply_to_message_id,
                 reply_markup=reply_markup,
@@ -219,7 +245,7 @@ async def _send_message_impl(
         if text:
             result = await bot.send_message(
                 chat_id=dest_channel_id, text=text, reply_to_message_id=reply_to_message_id,
-                entities=entities, parse_mode=parse_mode, reply_markup=reply_markup,
+                entities=text_entities, parse_mode=parse_mode, reply_markup=reply_markup,
             )
             return result.message_id
 
