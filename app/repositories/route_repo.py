@@ -29,6 +29,22 @@ class RouteRepository:
         )
         return result.scalar_one_or_none()
 
+    async def get_deleted_route(self, source_id: int, destination_id: int) -> Optional[Route]:
+        """The soft-deleted route for this pair, if there is one.
+
+        get_route() hides these, but they still hold the (source_id,
+        destination_id) unique constraint — so a caller about to INSERT needs
+        to know the row is there.
+        """
+        result = await self.session.execute(
+            select(Route).where(
+                Route.source_id == source_id,
+                Route.destination_id == destination_id,
+                Route.deleted_at.is_not(None),
+            )
+        )
+        return result.scalar_one_or_none()
+
     async def list_active_routes(self) -> List[Route]:
         result = await self.session.execute(
             select(Route).where(Route.is_active.is_(True), Route.deleted_at.is_(None))

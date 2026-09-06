@@ -272,6 +272,24 @@ async def create_route(
             existing.is_active = True
             await session.flush()
         return existing, False
+
+    # Deleting a route only sets deleted_at — the row stays, and it still holds
+    # the (source_id, destination_id) unique constraint. Inserting a new one on
+    # top therefore raises IntegrityError, which made a deleted route
+    # impossible to set up again: /addquick failed and the archive view has no
+    # restore button. That is how the Kazan route stayed down. Revive the row
+    # instead, with fresh settings — a deleted route is gone as far as anyone
+    # using the bot is concerned, and silently resurrecting an old media_only
+    # filter would drop every text post without saying so.
+    deleted = await repo.get_deleted_route(source_id, destination_id)
+    if deleted is not None:
+        deleted.deleted_at = None
+        deleted.is_active = True
+        deleted.strip_footer = False
+        deleted.media_only = False
+        await session.flush()
+        return deleted, True
+
     route = await repo.add_route(source_id, destination_id)
     return route, True
 
