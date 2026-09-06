@@ -725,7 +725,13 @@ def reset_last_seen(telegram_ids: Optional[List[int]] = None) -> int:
     return len(keys)
 
 
-STARTUP_CATCHUP_COUNT = 3  # on boot, pick up this many of the most recent posts per channel
+# On boot, pick up this many of the most recent posts per channel. Kept at 1:
+# with ~342 sources fanning out across their routes, every extra post here is
+# another few hundred messages pushed into live channels the moment the
+# service comes back. One is enough to prove delivery works and to bridge a
+# short outage; anything missed beyond that is better replayed deliberately
+# per channel with /resync <name>.
+STARTUP_CATCHUP_COUNT = 1
 
 
 async def _init_last_seen(client: TelegramClient) -> None:
