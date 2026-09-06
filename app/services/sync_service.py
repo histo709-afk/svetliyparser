@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import difflib
+import time
 from typing import Dict, List, Optional, Tuple
 
 import structlog
@@ -681,7 +682,31 @@ async def handle_edited_message(
 # {source_channel_id: last_processed_message_id}
 _last_seen: Dict[int, int] = {}
 
-POLL_INTERVAL = 30  # seconds
+# {source_channel_id: unix time we last saw a new post there}
+_last_post_at: Dict[int, float] = {}
+
+POLL_INTERVAL = 30  # seconds between cycles
+
+# The cycle used to walk every source strictly one at a time with a 0.3s pause
+# between them. Over ~342 channels that is 3-4 minutes of unavoidable latency
+# per lap before a single flood-wait, which is where the reported "posts arrive
+# 3-10 minutes late" came from — POLL_INTERVAL was never the bottleneck, the
+# lap time was. Polling a handful at once cuts the lap to well under a minute.
+#
+# Deliberately conservative: this account has just had its session revoked once
+# and a FLOOD_WAIT storm is the last thing it needs. These values cap the rate
+# at POLL_CONCURRENCY / POLL_SPACING = 10 requests/second in the worst case,
+# and nearer 6 once round-trip time is counted — a long way inside what
+# Telegram tolerates for a user account. Raise POLL_CONCURRENCY first if the
+# lap is still too slow.
+POLL_CONCURRENCY = 5  # simultaneous get_messages calls
+POLL_SPACING = 0.5  # seconds each worker waits after its request
+
+# A channel that has not posted in this long is checked every Nth cycle instead
+# of every one. Most of the 342 sources are quiet most of the time; spending
+# the whole lap on them is what delays the handful that are actually live.
+HOT_AFTER_SECONDS = 3600
+COLD_CYCLE_EVERY = 5
 
 
 def reset_last_seen(telegram_ids: Optional[List[int]] = None) -> int:
@@ -693,6 +718,10 @@ def reset_last_seen(telegram_ids: Optional[List[int]] = None) -> int:
         keys = [tid for tid in telegram_ids if tid in _last_seen]
     for k in keys:
         _last_seen[k] = 0
+        # /resync means "look at these now". Without this a channel that had
+        # gone quiet would sit in the cold tier and not actually be re-read
+        # until its next scheduled cycle.
+        _last_post_at[k] = time.time()
     return len(keys)
 
 
@@ -732,25 +761,63 @@ async def poll_sources(client: TelegramClient) -> None:
     for accounts subscribed to many channels.
     """
     await _init_last_seen(client)
-    log.info("poll_loop_started", interval=POLL_INTERVAL)
+    log.info("poll_loop_started", interval=POLL_INTERVAL, concurrency=POLL_CONCURRENCY)
+    cycle = 0
     while True:
         await asyncio.sleep(POLL_INTERVAL)
+        cycle += 1
         try:
             async with async_session_factory() as session:
                 channel_repo = ChannelRepository(session)
-                sources = await channel_repo.list_active_sources()
+                sources = await channel_repo.list_active_sources_with_routes()
 
-            for source in sources:
-                try:
-                    await _poll_one(client, source.telegram_id)
-                    await asyncio.sleep(0.3)
-                except ValueError as exc:
-                    # Channel inaccessible (not joined, deleted, etc.) — log once, skip
-                    log.warning("poll_one_inaccessible", source=source.telegram_id, error=str(exc)[:120])
-                except Exception as exc:
-                    log.warning("poll_one_error", source=source.telegram_id, error=str(exc)[:80])
+            due = [s.telegram_id for s in sources if _is_due(s.telegram_id, cycle)]
+            started = time.monotonic()
+            await _poll_batch(client, due)
+            log.info(
+                "poll_cycle_done",
+                cycle=cycle,
+                polled=len(due),
+                routed_sources=len(sources),
+                seconds=round(time.monotonic() - started, 1),
+            )
         except Exception as exc:
             log.error("poll_loop_error", error=str(exc))
+
+
+def _is_due(telegram_id: int, cycle: int) -> bool:
+    """Whether this channel gets polled on this cycle.
+
+    Anything that has posted recently — and anything we have not heard from at
+    all yet, so a fresh boot checks everything — goes every cycle. Long-quiet
+    channels go every COLD_CYCLE_EVERY-th, offset by their id so they spread
+    across cycles instead of all landing on the same one.
+    """
+    last_post = _last_post_at.get(telegram_id)
+    if last_post is None or (time.time() - last_post) < HOT_AFTER_SECONDS:
+        return True
+    return (cycle + telegram_id) % COLD_CYCLE_EVERY == 0
+
+
+async def _poll_batch(client: TelegramClient, telegram_ids: List[int]) -> None:
+    """Poll these channels a few at a time instead of one after another."""
+    semaphore = asyncio.Semaphore(POLL_CONCURRENCY)
+
+    async def poll(telegram_id: int) -> None:
+        async with semaphore:
+            try:
+                await _poll_one(client, telegram_id)
+            except ValueError as exc:
+                # Channel inaccessible (not joined, deleted, etc.) — log once, skip
+                log.warning("poll_one_inaccessible", source=telegram_id, error=str(exc)[:120])
+            except Exception as exc:
+                log.warning("poll_one_error", source=telegram_id, error=str(exc)[:80])
+            # Held inside the semaphore on purpose: this is what caps the
+            # request rate at roughly POLL_CONCURRENCY / POLL_SPACING per
+            # second rather than letting the batch go out as a burst.
+            await asyncio.sleep(POLL_SPACING)
+
+    await asyncio.gather(*(poll(tid) for tid in telegram_ids))
 
 
 async def _poll_one(client: TelegramClient, source_channel_id: int) -> None:
@@ -768,6 +835,10 @@ async def _poll_one(client: TelegramClient, source_channel_id: int) -> None:
             raise ValueError(f"Could not resolve channel {source_channel_id}")
     if not messages:
         return
+
+    # min_id already filtered to posts we have not handled, so reaching here
+    # means this channel is live — keep it in the every-cycle tier.
+    _last_post_at[source_channel_id] = time.time()
 
     # Group by grouped_id (albums)
     singles: List[Message] = []

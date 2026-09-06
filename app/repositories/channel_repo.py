@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.channel import DestinationChannel, SourceChannel
+from app.models.route import Route
 
 
 class ChannelRepository:
@@ -31,6 +32,29 @@ class ChannelRepository:
     async def list_active_sources(self) -> List[SourceChannel]:
         result = await self.session.execute(
             select(SourceChannel).where(SourceChannel.is_active.is_(True))
+        )
+        return list(result.scalars().all())
+
+    async def list_active_sources_with_routes(self) -> List[SourceChannel]:
+        """Active sources that at least one live route actually reads from.
+
+        Polling a source nothing routes from accomplishes nothing —
+        _process_single_message drops the message on `no_routes_for_source`
+        anyway — but it still costs a slot in a cycle that runs over hundreds
+        of channels. Destinations that also got recorded as sources (e.g.
+        -1003787903398) sit in that dead weight, as do sources whose routes
+        were deleted.
+        """
+        result = await self.session.execute(
+            select(SourceChannel)
+            .where(SourceChannel.is_active.is_(True))
+            .where(
+                exists().where(
+                    Route.source_id == SourceChannel.id,
+                    Route.is_active.is_(True),
+                    Route.deleted_at.is_(None),
+                )
+            )
         )
         return list(result.scalars().all())
 

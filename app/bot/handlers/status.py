@@ -21,6 +21,7 @@ from app.repositories.message_repo import MessageRepository
 from app.repositories.route_repo import RouteRepository
 from app.services.channel_service import channel_display_name
 from app.services.sync_service import get_last_errors, reset_last_seen
+from app.telethon_client.client import userbot_status
 
 router = Router(name="status")
 
@@ -574,8 +575,19 @@ async def show_status(event: Message | CallbackQuery, state: FSMContext) -> None
         routes = await route_repo.list_active_routes()
         today_count = await msg_repo.count_today()
 
+    if userbot_status.alive:
+        userbot_line = "🟢 Юзербот: <b>работает</b>"
+    else:
+        # Without this the only symptom of a revoked session is posts silently
+        # not arriving — which is how the 6 September outage ran for hours.
+        userbot_line = (
+            "⛔ Юзербот: <b>не работает — пересылка стоит</b>\n"
+            f"<code>{userbot_status.error or 'причина неизвестна'}</code>"
+        )
+
     text = (
         "📊 <b>Статус системы</b>\n\n"
+        f"{userbot_line}\n\n"
         f"📥 Источников: <b>{len(sources)}</b>\n"
         f"📤 Назначений: <b>{len(dests)}</b>\n"
         f"🔀 Активных маршрутов: <b>{len(routes)}</b>\n"
