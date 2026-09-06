@@ -3,6 +3,8 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
+import structlog
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -11,6 +13,8 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase
 
 from app.config import settings
+
+log = structlog.get_logger(__name__)
 
 _db_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1).replace("postgres://", "postgresql+asyncpg://", 1)
 
@@ -33,6 +37,62 @@ class Base(DeclarativeBase):
     pass
 
 
+# Columns added after the initial schema, as (table, column, DDL).
+#
+# Deliberately NOT written as `ADD COLUMN IF NOT EXISTS`: Postgres takes an
+# AccessExclusiveLock for that statement even when the column already exists
+# and the statement does nothing. During a rolling deploy the outgoing
+# container is still running SELECTs holding AccessShareLock on the same
+# tables, and the two deadlock — which is exactly how a boot died on
+# 6 September, taking the whole service down. Checking the catalog first means
+# that after the first successful run these take no locks at all.
+_COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
+    ("routes", "deleted_at",
+     "ALTER TABLE routes ADD COLUMN deleted_at TIMESTAMPTZ DEFAULT NULL"),
+    ("routes", "strip_footer",
+     "ALTER TABLE routes ADD COLUMN strip_footer BOOLEAN NOT NULL DEFAULT FALSE"),
+    ("routes", "media_only",
+     "ALTER TABLE routes ADD COLUMN media_only BOOLEAN NOT NULL DEFAULT FALSE"),
+    ("banned_words", "is_exception",
+     "ALTER TABLE banned_words ADD COLUMN is_exception BOOLEAN NOT NULL DEFAULT FALSE"),
+    ("source_channels", "invite_link",
+     "ALTER TABLE source_channels ADD COLUMN invite_link VARCHAR(255)"),
+]
+
+_COLUMN_EXISTS_SQL = text(
+    "SELECT 1 FROM information_schema.columns "
+    "WHERE table_name = :table AND column_name = :column"
+)
+
+
+async def _run_column_migrations() -> None:
+    """Apply pending column additions, one transaction each.
+
+    A migration that cannot get its lock right now is logged and skipped
+    rather than raised: the next boot retries it, whereas letting it escape
+    kills the process before the management bot ever starts.
+    """
+    for table, column, ddl in _COLUMN_MIGRATIONS:
+        try:
+            async with engine.begin() as conn:
+                already = await conn.execute(
+                    _COLUMN_EXISTS_SQL, {"table": table, "column": column}
+                )
+                if already.first() is not None:
+                    continue
+                # Fail fast instead of queueing behind a long-running reader.
+                await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+                await conn.execute(text(ddl))
+                log.info("column_migration_applied", table=table, column=column)
+        except Exception as exc:
+            log.warning(
+                "column_migration_deferred",
+                table=table,
+                column=column,
+                error=str(exc)[:160],
+            )
+
+
 async def init_db() -> None:
     """Create all tables if they don't exist yet (for dev / migration-less startup)."""
     from app.models import channel, message, route  # noqa: F401 — register models
@@ -42,33 +102,8 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # Add deleted_at column to routes if it doesn't exist yet
-        await conn.execute(
-            __import__("sqlalchemy").text(
-                "ALTER TABLE routes ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ DEFAULT NULL"
-            )
-        )
-        await conn.execute(
-            __import__("sqlalchemy").text(
-                "ALTER TABLE routes ADD COLUMN IF NOT EXISTS strip_footer BOOLEAN NOT NULL DEFAULT FALSE"
-            )
-        )
-        await conn.execute(
-            __import__("sqlalchemy").text(
-                "ALTER TABLE routes ADD COLUMN IF NOT EXISTS media_only BOOLEAN NOT NULL DEFAULT FALSE"
-            )
-        )
-        await conn.execute(
-            __import__("sqlalchemy").text(
-                "ALTER TABLE banned_words ADD COLUMN IF NOT EXISTS is_exception BOOLEAN NOT NULL DEFAULT FALSE"
-            )
-        )
-        await conn.execute(
-            __import__("sqlalchemy").text(
-                "ALTER TABLE source_channels ADD COLUMN IF NOT EXISTS invite_link VARCHAR(255)"
-            )
-        )
 
+    await _run_column_migrations()
     await _seed_global_text_replacements()
 
 
