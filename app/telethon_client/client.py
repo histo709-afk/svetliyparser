@@ -232,7 +232,10 @@ async def start_client() -> TelegramClient:
         await telethon_client.connect()
         authorized = await telethon_client.is_user_authorized()
     except AuthKeyDuplicatedError as exc:
-        await release_session_lock()
+        # shutdown_client, not release_session_lock: leaving the client
+        # connected lets Telethon's reconnect loop keep retrying a key that
+        # will never work again, hammering Telegram every ~90s.
+        await shutdown_client()
         raise SessionRevokedError(
             "Telegram revoked this auth key — it was used from two IPs at "
             "once. Generate a new TELEGRAM_SESSION_STRING and set it in "
@@ -240,7 +243,7 @@ async def start_client() -> TelegramClient:
         ) from exc
 
     if not authorized:
-        await release_session_lock()
+        await shutdown_client()
         raise SessionRevokedError(
             "Telethon session is not authorized. Generate a new "
             "TELEGRAM_SESSION_STRING and set it in Railway."
