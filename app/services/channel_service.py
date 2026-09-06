@@ -37,6 +37,11 @@ DEAD_SESSION_MESSAGE = (
     "TELEGRAM_SESSION_STRING, затем задеплоить ОДИН раз."
 )
 
+STARTING_UP_MESSAGE = (
+    "Юзербот ещё подключается — он ждёт, пока предыдущий контейнер отпустит "
+    "сессию. После деплоя это занимает до минуты. Повтори команду чуть позже."
+)
+
 
 @dataclass
 class ChannelInfo:
@@ -77,6 +82,17 @@ async def resolve_channel(
     identifier = parse_channel_link(link)
     if not identifier:
         return None
+
+    if not client.is_connected():
+        # The management bot comes up before the userbot on purpose, so it
+        # stays reachable when the session is dead. The cost is a window right
+        # after a deploy where commands arrive while the userbot is still
+        # queueing for the session lock. Without this check Telethon's "Cannot
+        # send requests while disconnected" is swallowed by the catch-all below
+        # and reported as "не удалось найти канал" — which sends the
+        # investigation after the channel instead of after the clock.
+        log.warning("resolve_channel_not_connected", identifier=identifier)
+        raise ValueError(STARTING_UP_MESSAGE)
 
     # Handle numeric IDs
     if identifier.lstrip("-").isdigit():
