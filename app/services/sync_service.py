@@ -718,7 +718,12 @@ def reset_last_seen(telegram_ids: Optional[List[int]] = None) -> int:
     if telegram_ids is None:
         keys = list(_last_seen.keys())
     else:
-        keys = [tid for tid in telegram_ids if tid in _last_seen]
+        # Not filtered to ids already present. For the first minute after a
+        # deploy the cursor map is still empty — _init_last_seen only fills it
+        # once the userbot has the session lock — and filtering turned /resync
+        # into a silent no-op that reported "Сброшено 0 каналов" while still
+        # promising the next cycle would pick the posts up.
+        keys = list(telegram_ids)
     for k in keys:
         _last_seen[k] = 0
         # /resync means "look at these now". Without this a channel that had
