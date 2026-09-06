@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import difflib
+import os
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -693,14 +694,16 @@ POLL_INTERVAL = 30  # seconds between cycles
 # 3-10 minutes late" came from — POLL_INTERVAL was never the bottleneck, the
 # lap time was. Polling a handful at once cuts the lap to well under a minute.
 #
-# Deliberately conservative: this account has just had its session revoked once
-# and a FLOOD_WAIT storm is the last thing it needs. These values cap the rate
-# at POLL_CONCURRENCY / POLL_SPACING = 10 requests/second in the worst case,
-# and nearer 6 once round-trip time is counted — a long way inside what
-# Telegram tolerates for a user account. Raise POLL_CONCURRENCY first if the
-# lap is still too slow.
-POLL_CONCURRENCY = 5  # simultaneous get_messages calls
-POLL_SPACING = 0.5  # seconds each worker waits after its request
+# Tunable from Railway without a redeploy of this file's defaults.
+#
+# Going fully parallel — one request per source, all at once — is slower, not
+# faster. Telegram answers a burst that size with FLOOD_WAIT, and Telethon only
+# absorbs waits under its 60s threshold: anything longer raises, and _poll_batch
+# skips that channel until the next lap. So the channels you most wanted news
+# from are the ones that get dropped. These defaults sit high enough to clear a
+# lap in well under a minute and low enough that flood waits stay occasional.
+POLL_CONCURRENCY = int(os.environ.get("POLL_CONCURRENCY", "15"))
+POLL_SPACING = float(os.environ.get("POLL_SPACING", "0.3"))
 
 # A channel that has not posted in this long is checked every Nth cycle instead
 # of every one. Most of the 342 sources are quiet most of the time; spending
