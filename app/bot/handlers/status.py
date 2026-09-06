@@ -663,6 +663,68 @@ async def cmd_remove_route(message: Message) -> None:
         await message.answer(f"❌ Маршрут #{route_id} не найден.")
 
 
+@router.message(Command("resetroute"))
+async def cmd_reset_route(message: Message) -> None:
+    """Wipe a route's own settings and start it clean, keeping the same route ID.
+    Usage: /resetroute <ID>
+    Deleting and re-adding a route does NOT do this — create_route() finds the
+    existing row and just reactivates it, so every per-route filter (the
+    media-only toggle in particular, which silently drops text-only posts)
+    survives and keeps applying."""
+    from sqlalchemy import delete as sa_delete
+    from app.models.banned_word import BannedWord
+    from app.models.required_keyword import RequiredKeyword
+    from app.models.text_replacement import TextReplacement
+
+    parts = message.text.split() if message.text else []
+    if len(parts) < 2 or not parts[1].isdigit():
+        await message.answer(
+            "Использование:\n<code>/resetroute ID</code>\n\n"
+            "Сбрасывает настройки маршрута начисто: запретные слова, обязательные "
+            "слова и замены текста этого маршрута удаляются, «только фото/видео» "
+            "выключается, авто-удаление плашки включается, курсор сбрасывается.",
+            parse_mode="HTML",
+        )
+        return
+
+    route_id = int(parts[1])
+
+    async with async_session_factory() as session:
+        repo = RouteRepository(session)
+        route = await repo.get_route_by_id(route_id)
+        if route is None:
+            await message.answer(f"❌ Маршрут #{route_id} не найден.")
+            return
+
+        banned = await session.execute(sa_delete(BannedWord).where(BannedWord.route_id == route_id))
+        required = await session.execute(sa_delete(RequiredKeyword).where(RequiredKeyword.route_id == route_id))
+        replacements = await session.execute(sa_delete(TextReplacement).where(TextReplacement.route_id == route_id))
+
+        route.is_active = True
+        route.deleted_at = None
+        route.media_only = False
+        route.strip_footer = True
+
+        source_telegram_id = route.source.telegram_id if route.source else None
+        label = _route_label(route)
+        await session.commit()
+
+    if source_telegram_id is not None:
+        reset_last_seen([source_telegram_id])
+
+    await message.answer(
+        f"♻️ <b>Маршрут #{route_id} сброшен</b>\n\n{label}\n\n"
+        f"🚫 Удалено запретных слов: <b>{banned.rowcount}</b>\n"
+        f"🔑 Удалено обязательных слов: <b>{required.rowcount}</b>\n"
+        f"✂️ Удалено замен текста: <b>{replacements.rowcount}</b>\n"
+        f"☑️ Только фото/видео: <b>выключено</b>\n"
+        f"✅ Авто-удаление плашки: <b>включено</b>\n"
+        f"▶️ Статус: <b>запущен</b>\n"
+        f"🔄 Курсор сброшен — посты пойдут в течение ~1 минуты",
+        parse_mode="HTML",
+    )
+
+
 @router.message(Command("resync"))
 async def cmd_resync(message: Message) -> None:
     """Reset _last_seen for all (or specific) channels so next poll picks up recent messages.

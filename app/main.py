@@ -65,6 +65,7 @@ async def start_aiogram_bot() -> None:
         BotCommand(command="status", description="Статус системы"),
         BotCommand(command="logs", description="Последние ошибки"),
         BotCommand(command="resync", description="Подхватить последние посты"),
+        BotCommand(command="resetroute", description="Сбросить маршрут начисто"),
         BotCommand(command="joinall", description="Довступить во все источники"),
     ])
     await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
