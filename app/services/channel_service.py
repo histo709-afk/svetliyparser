@@ -21,6 +21,10 @@ from app.repositories.route_repo import RouteRepository
 
 log = structlog.get_logger(__name__)
 
+# Longest flood wait worth sleeping through inline, in seconds. Anything
+# longer is reported to the user instead of silently blocking the handler.
+MAX_FLOOD_WAIT = 60
+
 
 @dataclass
 class ChannelInfo:
@@ -119,6 +123,15 @@ async def resolve_channel(
                 return None
         except FloodWaitError as e:
             log.warning("resolve_invite_flood_wait", hash=invite_hash, seconds=e.seconds)
+            # Telegram hands out flood waits of hours for this call. Sleeping
+            # it out leaves whatever asked for the resolve (an /addquick, an
+            # "add source" wizard sitting on "🔍 Ищу канал...") hanging with no
+            # way to tell it apart from a crash — fail fast and say how long.
+            if e.seconds > MAX_FLOOD_WAIT:
+                raise ValueError(
+                    f"Telegram просит подождать {e.seconds} сек. перед следующей "
+                    f"попыткой ({e.seconds // 60} мин.). Повторите позже."
+                ) from e
             await asyncio.sleep(e.seconds + 1)
             try:
                 result = await client(CheckChatInviteRequest(invite_hash))
