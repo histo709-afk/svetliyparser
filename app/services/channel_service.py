@@ -255,11 +255,28 @@ async def add_destination_channel(
     link: str,
 ) -> tuple[DestinationChannel, bool]:
     """Add or retrieve a destination channel. Returns (channel, created)."""
+    repo = ChannelRepository(session)
+
+    # A destination is where the *bot* posts, so the userbot is normally not a
+    # member — and Telethon cannot resolve a bare numeric ID for a channel it
+    # has never seen, because there is no access_hash to go with it. Asking
+    # Telegram first therefore fails for exactly the destinations that have
+    # been working for months, reporting "не удалось найти канал" about a
+    # channel sitting in our own table. When the ID is one we already store,
+    # trust the database.
+    identifier = parse_channel_link(link)
+    if identifier and identifier.lstrip("-").isdigit():
+        known = await repo.get_destination_by_telegram_id(int(identifier))
+        if known is not None:
+            if not known.is_active:
+                known.is_active = True
+                await session.flush()
+            return known, False
+
     info = await resolve_channel(client, link)
     if info is None:
         raise ValueError(f"Не удалось найти канал по ссылке: {link}")
 
-    repo = ChannelRepository(session)
     existing = await repo.get_destination_by_telegram_id(info.telegram_id)
     if existing is not None:
         if not existing.is_active:
