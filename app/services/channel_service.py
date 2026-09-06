@@ -10,7 +10,12 @@ import asyncio
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 from telethon import TelegramClient
-from telethon.errors import UsernameInvalidError, UsernameNotOccupiedError, FloodWaitError
+from telethon.errors import (
+    AuthKeyDuplicatedError,
+    FloodWaitError,
+    UsernameInvalidError,
+    UsernameNotOccupiedError,
+)
 from telethon.tl.functions.messages import CheckChatInviteRequest
 from telethon.tl.types import Channel, Chat, ChatInviteAlready, ChatInvite
 
@@ -24,6 +29,13 @@ log = structlog.get_logger(__name__)
 # Longest flood wait worth sleeping through inline, in seconds. Anything
 # longer is reported to the user instead of silently blocking the handler.
 MAX_FLOOD_WAIT = 60
+
+DEAD_SESSION_MESSAGE = (
+    "Сессия юзербота недействительна (её использовали с двух разных IP "
+    "одновременно — обычно это два запущенных контейнера или вход в аккаунт "
+    "с телефона). Нужно сгенерировать новую строку сессии и обновить "
+    "TELEGRAM_SESSION_STRING, затем задеплоить ОДИН раз."
+)
 
 
 @dataclass
@@ -70,6 +82,9 @@ async def resolve_channel(
     if identifier.lstrip("-").isdigit():
         try:
             entity = await client.get_entity(int(identifier))
+        except AuthKeyDuplicatedError as exc:
+            log.error("resolve_channel_dead_session", identifier=identifier)
+            raise ValueError(DEAD_SESSION_MESSAGE) from exc
         except Exception as exc:
             log.warning("resolve_channel_failed", identifier=identifier, error=str(exc))
             return None
@@ -148,6 +163,9 @@ async def resolve_channel(
     else:
         try:
             entity = await client.get_entity(identifier)
+        except AuthKeyDuplicatedError as exc:
+            log.error("resolve_channel_dead_session", identifier=identifier)
+            raise ValueError(DEAD_SESSION_MESSAGE) from exc
         except (UsernameInvalidError, UsernameNotOccupiedError, ValueError) as exc:
             log.warning("resolve_channel_failed", identifier=identifier, error=str(exc))
             return None
