@@ -123,6 +123,15 @@ _AD_MARKER_RE = _re.compile(r'\(\s*реклама\s*\)', _re.IGNORECASE)
 # from the divider onward, which stays correct even if the ad text/link
 # behind it changes or rotates later — no rule update needed.
 _DIVIDER_RE = _re.compile(r'^_{3,}$')
+# The "Где Бензин"/"Бензин <город>" channel family closes every real point
+# with a hyperlinked "🗺 Проложить маршрут" line before any sponsor blurb.
+# That blurb's copy rotates constantly (Алтын, Носок VPN, Drive, Яндекс
+# Карты, ...) and — unlike a real ad — usually carries no literal URL, no
+# "(Реклама)" tag and no divider, so it slips past every heuristic below.
+# Cutting everything after the LAST such paragraph is a structural signal
+# instead of a copy-matching one: it survives the ad text changing again
+# next week, and is a no-op for any post that never mentions the phrase.
+_MAP_LINK_RE = _re.compile(r'проложить\s+маршрут', _re.IGNORECASE)
 
 
 def _paragraph_is_or_starts_with_divider(p: str) -> bool:
@@ -150,6 +159,15 @@ def _is_footer_paragraph(p: str) -> bool:
     )
 
 
+def _last_index(chunks: List[str], pattern: "_re.Pattern") -> Optional[int]:
+    """Index of the last chunk matching `pattern`, or None."""
+    idx = None
+    for i, chunk in enumerate(chunks):
+        if pattern.search(chunk):
+            idx = i
+    return idx
+
+
 def _strip_footer(text: str) -> str:
     """Remove trailing paragraph(s) that look like an ad signature (URL/@mention)
     or a per-post author signature (Name · N мин назад). A "____" divider
@@ -163,6 +181,9 @@ def _strip_footer(text: str) -> str:
     if len(paragraphs) <= 1:
         # Try splitting by single newline as last resort
         lines = text.split("\n")
+        map_link_idx = _last_index(lines, _MAP_LINK_RE)
+        if map_link_idx is not None and map_link_idx < len(lines) - 1:
+            lines = lines[: map_link_idx + 1]
         for i in range(len(lines) - 1, -1, -1):
             if _DIVIDER_RE.match(lines[i].strip()):
                 lines = lines[:i]
@@ -178,6 +199,10 @@ def _strip_footer(text: str) -> str:
             if _AD_MARKER_RE.fullmatch(last) and len(lines) > 1:
                 lines = lines[:-1]
         return "\n".join(lines).rstrip()
+
+    map_link_idx = _last_index(paragraphs, _MAP_LINK_RE)
+    if map_link_idx is not None and map_link_idx < len(paragraphs) - 1:
+        paragraphs = paragraphs[: map_link_idx + 1]
 
     for i in range(len(paragraphs) - 1, -1, -1):
         if _paragraph_is_or_starts_with_divider(paragraphs[i]):
