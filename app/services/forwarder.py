@@ -1,6 +1,7 @@
 """Copy messages from source to destination: download via Telethon, send via Bot API."""
 from __future__ import annotations
 
+import time
 from typing import List, Optional
 
 import structlog
@@ -10,6 +11,33 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.types import MessageEntity as AiogramMessageEntity
 
 log = structlog.get_logger(__name__)
+
+# Some destinations sit permanently unreachable — the bot demoted from admin,
+# or the channel deleted — and every poll cycle still downloads the full
+# photo/video from Telethon before Bot API even gets a chance to say "chat
+# not found". Across ~340 sources that is a lot of wasted bandwidth and poll
+# time for a result that was never going to change. Short-circuit any
+# destination we've *specifically* seen reject with that error recently, and
+# recheck periodically in case admin rights get restored — this is not the
+# place to decide a destination should be deactivated for good, only to stop
+# paying for a download whose upload we already know will be refused.
+_DEAD_DESTINATION_RETRY_SECONDS = 300
+_dead_destinations: dict[int, float] = {}
+
+
+def _is_known_dead(dest_channel_id: int) -> bool:
+    marked_at = _dead_destinations.get(dest_channel_id)
+    if marked_at is None:
+        return False
+    if time.monotonic() - marked_at > _DEAD_DESTINATION_RETRY_SECONDS:
+        del _dead_destinations[dest_channel_id]
+        return False
+    return True
+
+
+def _mark_dead_if_chat_not_found(dest_channel_id: int, error: Exception) -> None:
+    if "chat not found" in str(error).lower():
+        _dead_destinations[dest_channel_id] = time.monotonic()
 
 
 def _get_bot() -> Bot:
@@ -156,6 +184,9 @@ async def _send_message_impl(
     entities: Optional[List[AiogramMessageEntity]] = None,
     reply_markup: Optional[InlineKeyboardMarkup] = None,
 ) -> Optional[int]:
+    if _is_known_dead(dest_channel_id):
+        log.warning("send_message_skipped_dead_destination", dest=dest_channel_id, msg_id=message.id)
+        return None
     bot = _get_bot()
     # Entities and parse_mode are mutually exclusive on Telegram's side —
     # explicitly clear the bot's default (HTML) parse mode whenever real
@@ -254,6 +285,7 @@ async def _send_message_impl(
 
     except Exception as exc:
         log.error("send_message_failed", dest=dest_channel_id, msg_id=message.id, error=str(exc))
+        _mark_dead_if_chat_not_found(dest_channel_id, exc)
         return None
     finally:
         await bot.session.close()
@@ -284,6 +316,9 @@ async def _send_album_impl(
     reply_to_message_id: Optional[int],
 ) -> List[int]:
     if not messages:
+        return []
+    if _is_known_dead(dest_channel_id):
+        log.warning("send_album_skipped_dead_destination", dest=dest_channel_id)
         return []
     messages = sorted(messages, key=lambda m: m.id)
     bot = _get_bot()
@@ -372,6 +407,7 @@ async def _send_album_impl(
 
     except Exception as exc:
         log.error("send_album_failed", dest=dest_channel_id, error=str(exc))
+        _mark_dead_if_chat_not_found(dest_channel_id, exc)
         return []
     finally:
         await bot.session.close()
