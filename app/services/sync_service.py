@@ -168,6 +168,21 @@ def _last_index(chunks: List[str], pattern: "_re.Pattern") -> Optional[int]:
     return idx
 
 
+def _is_hard_cut_marker(paragraph: str) -> bool:
+    """A paragraph that marks a hard boundary before an appended sponsor
+    block, regardless of what that block's text says: a "____" divider, or
+    an outright blank paragraph.
+
+    The blank-paragraph case matters because not every post in this channel
+    family ends its real content with "🗺 Проложить маршрут" — the nightly
+    "ночные завозы" forecast posts, for one, don't mention it at all, so
+    _MAP_LINK_RE never fires for them. What they DO share with every other
+    post type is that the source inserts one extra blank line before the ad
+    block — a structural tell that survives the ad copy (and even the post
+    layout) changing again, the same way the divider already does."""
+    return _paragraph_is_or_starts_with_divider(paragraph) or not paragraph.strip()
+
+
 def _strip_footer(text: str) -> str:
     """Remove trailing paragraph(s) that look like an ad signature (URL/@mention)
     or a per-post author signature (Name · N мин назад). A "____" divider
@@ -185,7 +200,7 @@ def _strip_footer(text: str) -> str:
         if map_link_idx is not None and map_link_idx < len(lines) - 1:
             lines = lines[: map_link_idx + 1]
         for i in range(len(lines) - 1, -1, -1):
-            if _DIVIDER_RE.match(lines[i].strip()):
+            if _DIVIDER_RE.match(lines[i].strip()) or not lines[i].strip():
                 lines = lines[:i]
                 break
         while len(lines) > 1:
@@ -205,7 +220,7 @@ def _strip_footer(text: str) -> str:
         paragraphs = paragraphs[: map_link_idx + 1]
 
     for i in range(len(paragraphs) - 1, -1, -1):
-        if _paragraph_is_or_starts_with_divider(paragraphs[i]):
+        if _is_hard_cut_marker(paragraphs[i]):
             paragraphs = paragraphs[:i]
             break
     while len(paragraphs) > 1 and _is_footer_paragraph(paragraphs[-1].strip()):
