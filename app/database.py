@@ -99,6 +99,7 @@ async def init_db() -> None:
     from app.models import banned_word  # noqa: F401 — register BannedWord model
     from app.models import text_replacement  # noqa: F401 — register TextReplacement model
     from app.models import required_keyword  # noqa: F401 — register RequiredKeyword model
+    from app.models import join_queue  # noqa: F401 — register JoinQueueItem model
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

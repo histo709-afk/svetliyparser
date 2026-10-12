@@ -6,6 +6,7 @@ import copy
 import difflib
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
 import structlog
@@ -781,6 +782,12 @@ def reset_last_seen(telegram_ids: Optional[List[int]] = None) -> int:
 # per channel with /resync <name>.
 STARTUP_CATCHUP_COUNT = 1
 
+# ...but only if that post is this fresh. The catch-up exists to bridge the
+# minute or two a deploy takes; a post older than this was either forwarded
+# long ago or belongs to a source that was primed without forwarding (see
+# _poll_one), and pushing it now would be news from yesterday.
+STARTUP_CATCHUP_MAX_AGE = timedelta(hours=1)
+
 
 async def _init_last_seen(client: TelegramClient) -> None:
     """On startup, rewind each source channel's cursor so the next poll cycle
@@ -800,8 +807,15 @@ async def _init_last_seen(client: TelegramClient) -> None:
                 entity = await client.get_entity(source.telegram_id)
                 msgs = await client.get_messages(entity, limit=STARTUP_CATCHUP_COUNT)
             if msgs:
-                oldest_of_batch = min(m.id for m in msgs)
-                _last_seen[source.telegram_id] = oldest_of_batch - 1
+                newest = max(msgs, key=lambda m: m.id)
+                fresh = (
+                    newest.date is not None
+                    and datetime.now(timezone.utc) - newest.date < STARTUP_CATCHUP_MAX_AGE
+                )
+                if fresh:
+                    _last_seen[source.telegram_id] = min(m.id for m in msgs) - 1
+                else:
+                    _last_seen[source.telegram_id] = newest.id
             await asyncio.sleep(0.1)
         except Exception:
             _last_seen[source.telegram_id] = 0
@@ -876,6 +890,13 @@ async def _poll_batch(client: TelegramClient, telegram_ids: List[int]) -> None:
 
 async def _poll_one(client: TelegramClient, source_channel_id: int) -> None:
     """Fetch recent messages from one source channel and process any new ones."""
+    # A source added while the service runs (the join queue, /addquick, an
+    # import) has no cursor yet, and min_id=0 would hand back its five latest
+    # posts — however old — straight into the destination. Hundreds of sources
+    # joining over a day would flood it with backlog. The first look only
+    # records where the channel is; forwarding starts from the next post.
+    # /resync sets the cursor to 0 explicitly, so it is not mistaken for this.
+    first_sight = source_channel_id not in _last_seen
     last_id = _last_seen.get(source_channel_id, 0)
 
     try:
@@ -887,6 +908,10 @@ async def _poll_one(client: TelegramClient, source_channel_id: int) -> None:
             messages = await client.get_messages(entity, limit=5, min_id=last_id)
         except Exception:
             raise ValueError(f"Could not resolve channel {source_channel_id}")
+    if first_sight:
+        _last_seen[source_channel_id] = max((m.id for m in messages), default=0)
+        log.info("poll_source_primed", source=source_channel_id, cursor=_last_seen[source_channel_id])
+        return
     if not messages:
         return
 

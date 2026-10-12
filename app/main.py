@@ -25,6 +25,7 @@ from app.telethon_client.client import (
     start_client,
     userbot_status,
 )
+from app.services.join_queue import run_join_queue
 from app.services.sync_service import poll_sources
 from app.telethon_client.listener import fix_all_stale_ids, run_listener
 
@@ -91,6 +92,7 @@ async def start_aiogram_bot(bot: Bot, redis_client) -> None:
         BotCommand(command="resync", description="Подхватить последние посты"),
         BotCommand(command="resetroute", description="Сбросить маршрут начисто"),
         BotCommand(command="joinall", description="Довступить во все источники"),
+        BotCommand(command="joinqueue", description="Очередь подключения источников"),
     ])
     await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
@@ -153,10 +155,12 @@ async def start_telethon(bot: Bot) -> None:
     # Fix all stale telegram_ids using dialog entity cache (no flood limits)
     await fix_all_stale_ids(client)
     try:
-        # run_listener, poll_sources, and run_until_disconnected run concurrently
+        # run_listener, poll_sources, the join queue and run_until_disconnected
+        # run concurrently
         await asyncio.gather(
             run_listener(client),
             poll_sources(client),
+            run_join_queue(client, bot, lambda text: alert_admins(bot, text)),
             client.run_until_disconnected(),
         )
     finally:
