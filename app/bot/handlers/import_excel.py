@@ -10,10 +10,17 @@ from app.bot.keyboards import back_to_menu_keyboard
 from app.database import async_session_factory
 from app.services.channel_service import (
     add_source_channel, add_destination_channel, create_route, resolve_channel,
-    join_channel_link,
+    join_channel_link, parse_channel_link,
 )
+from app.services.join_queue import JOIN_QUEUE_INTERVAL, enqueue
 
 router = Router(name="import")
+
+# A file with this many rows or more goes through the background join queue
+# instead of being joined inline. Telegram starts answering joins with flood
+# waits after a few dozen, and the inline path gives up after one 60s sleep,
+# so a regional base would come back as a wall of errors.
+QUEUE_THRESHOLD = 20
 
 
 def _get_telethon_client():
@@ -113,6 +120,10 @@ async def handle_excel_import(message: Message) -> None:
 
     client = _get_telethon_client()
 
+    if len(data_rows) >= QUEUE_THRESHOLD:
+        await _import_via_queue(message, client, data_rows, doc.file_name)
+        return
+
     # Pre-resolve all unique destination links once to avoid rate limits.
     # First JOIN each destination (needed for private invite links to resolve).
     unique_dest_links = {dest for _, dest in data_rows}
@@ -171,4 +182,43 @@ async def handle_excel_import(message: Message) -> None:
         text += f"\n⚠️ Ошибки ({len(errors)}):\n"
         text += "\n".join(errors[:10])
 
+    await message.answer(text, reply_markup=back_to_menu_keyboard(), parse_mode="HTML")
+
+
+async def _import_via_queue(message: Message, client, data_rows, file_name: str) -> None:
+    """Register each destination now, queue the sources for joining."""
+    by_dest: dict[str, list[str]] = {}
+    for source_link, dest_link in data_rows:
+        by_dest.setdefault(dest_link, []).append(source_link)
+
+    batch = file_name.rsplit(".", 1)[0][:64]
+    lines: list[str] = []
+    queued_total = 0
+    for dest_link, sources in by_dest.items():
+        try:
+            identifier = parse_channel_link(dest_link)
+            if not identifier.lstrip("-").isdigit():
+                # A private destination only resolves once the userbot is in it.
+                await join_channel_link(client, dest_link)
+            async with async_session_factory() as session:
+                dst, _ = await add_destination_channel(session, client, dest_link)
+                await session.commit()
+        except Exception as e:
+            lines.append(f"❌ {dest_link}: {str(e)[:80]}")
+            continue
+        added = await enqueue([(src, None) for src in sources], dst.telegram_id, batch=batch)
+        queued_total += added
+        lines.append(
+            f"• {dst.title or dst.telegram_id}: в очередь <b>{added}</b>, "
+            f"уже подключены или в очереди {len(sources) - added}"
+        )
+
+    hours = queued_total * JOIN_QUEUE_INTERVAL / 3600
+    text = (
+        f"📥 <b>Таблица принята в очередь подключения.</b>\n\n"
+        + "\n".join(lines)
+        + f"\n\nБот вступает в один канал раз в {JOIN_QUEUE_INTERVAL} сек. и сам строит маршруты"
+        + (f" — примерно {hours:.0f} ч. без учёта пауз Telegram." if queued_total else ".")
+        + "\nПрогресс — /joinqueue"
+    )
     await message.answer(text, reply_markup=back_to_menu_keyboard(), parse_mode="HTML")

@@ -11,13 +11,11 @@ is given in full, and keeps its place in the database across deploys.
 from __future__ import annotations
 
 import asyncio
-import csv
 import os
-from pathlib import Path
 from typing import Awaitable, Callable, Iterable, Optional
 
 import structlog
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from telethon import TelegramClient
 from telethon.errors import (
@@ -54,15 +52,12 @@ IDLE_SLEEP = 300
 TOO_MANY_CHANNELS_SLEEP = 6 * 3600
 MAX_ATTEMPTS = 3
 
-_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-
-# Bases seeded into the queue on boot, as (batch, destination id, csv file).
-# Inserting is idempotent per (link, destination), so a redeploy re-seeds
-# nothing. Added here rather than via the bot because the base arrived as a
-# file on the operator's machine, not through the bot's chat.
-SEED_BATCHES: list[tuple[str, int, str]] = [
-    ("ural", -1004455437967, "ural_sources.csv"),
-]
+# Batches retired by the operator: their not-yet-joined items are dropped on
+# boot. "ural" was seeded from a bundled CSV on 12 October; the operator then
+# chose to load the base by sending the table to the bot instead, so the
+# leftover seed must not keep joining alongside (or ahead of) that upload.
+# Already-joined items stay — those channels are connected and routed.
+RETIRED_BATCHES: list[str] = ["ural"]
 
 
 async def enqueue(
@@ -88,17 +83,15 @@ async def enqueue(
         return result.rowcount or 0
 
 
-async def _seed() -> None:
-    for batch, dest_id, filename in SEED_BATCHES:
-        path = _DATA_DIR / filename
-        if not path.exists():
-            log.warning("join_queue_seed_missing", file=str(path))
-            continue
-        with path.open(encoding="utf-8") as fh:
-            links = [(row["link"], row.get("title")) for row in csv.DictReader(fh)]
-        added = await enqueue(links, dest_id, batch=batch)
-        if added:
-            log.info("join_queue_seeded", batch=batch, added=added)
+async def clear_pending(batch: Optional[str] = None) -> int:
+    """Drop items not joined yet (all of them, or one batch's). Returns count."""
+    async with async_session_factory() as session:
+        stmt = delete(JoinQueueItem).where(JoinQueueItem.status == "pending")
+        if batch is not None:
+            stmt = stmt.where(JoinQueueItem.batch == batch)
+        result = await session.execute(stmt)
+        await session.commit()
+        return result.rowcount or 0
 
 
 async def queue_stats() -> dict:
@@ -255,10 +248,13 @@ async def _report_done(notify: Notify, batch: Optional[str]) -> None:
 async def run_join_queue(client: TelegramClient, bot, notify: Notify) -> None:
     """Work the queue forever. Never raises: it shares a gather with the
     listener and the poller, and must not take them down with it."""
-    try:
-        await _seed()
-    except Exception as exc:
-        log.error("join_queue_seed_failed", error=str(exc)[:200])
+    for batch in RETIRED_BATCHES:
+        try:
+            dropped = await clear_pending(batch)
+            if dropped:
+                log.info("join_queue_retired", batch=batch, dropped=dropped)
+        except Exception as exc:
+            log.error("join_queue_retire_failed", batch=batch, error=str(exc)[:200])
 
     await asyncio.sleep(STARTUP_DELAY)
     log.info("join_queue_started", interval=JOIN_QUEUE_INTERVAL)

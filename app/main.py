@@ -93,6 +93,7 @@ async def start_aiogram_bot(bot: Bot, redis_client) -> None:
         BotCommand(command="resetroute", description="Сбросить маршрут начисто"),
         BotCommand(command="joinall", description="Довступить во все источники"),
         BotCommand(command="joinqueue", description="Очередь подключения источников"),
+        BotCommand(command="stopqueue", description="Остановить очередь подключения"),
     ])
     await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 

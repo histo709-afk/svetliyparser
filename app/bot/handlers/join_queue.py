@@ -7,7 +7,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
-from app.services.join_queue import JOIN_QUEUE_INTERVAL, queue_stats
+from app.services.join_queue import JOIN_QUEUE_INTERVAL, clear_pending, queue_stats
 
 router = Router(name="join_queue")
 
@@ -37,3 +37,12 @@ async def cmd_join_queue(message: Message) -> None:
             lines.append(f"• {name} — {escape(item.error or '?')}")
 
     await message.answer("\n".join(lines), disable_web_page_preview=True)
+
+
+@router.message(Command("stopqueue"))
+async def cmd_stop_queue(message: Message) -> None:
+    dropped = await clear_pending()
+    await message.answer(
+        f"⏹ Очередь остановлена: снято <b>{dropped}</b> неподключённых каналов.\n"
+        f"Уже подключённые каналы продолжают работать."
+    )
