@@ -37,7 +37,10 @@ class Base(DeclarativeBase):
     pass
 
 
-# Columns added after the initial schema, as (table, column, DDL).
+# Columns added after the initial schema, as (table, column, DDL[, backfill]).
+# The optional backfill runs once, in the same transaction, right after the
+# column is created — so it sets an initial value without overriding later
+# changes made through the bot.
 #
 # Deliberately NOT written as `ADD COLUMN IF NOT EXISTS`: Postgres takes an
 # AccessExclusiveLock for that statement even when the column already exists
@@ -46,7 +49,7 @@ class Base(DeclarativeBase):
 # tables, and the two deadlock — which is exactly how a boot died on
 # 6 September, taking the whole service down. Checking the catalog first means
 # that after the first successful run these take no locks at all.
-_COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
+_COLUMN_MIGRATIONS: list[tuple[str, ...]] = [
     ("routes", "deleted_at",
      "ALTER TABLE routes ADD COLUMN deleted_at TIMESTAMPTZ DEFAULT NULL"),
     ("routes", "strip_footer",
@@ -57,6 +60,10 @@ _COLUMN_MIGRATIONS: list[tuple[str, str, str]] = [
      "ALTER TABLE banned_words ADD COLUMN is_exception BOOLEAN NOT NULL DEFAULT FALSE"),
     ("source_channels", "invite_link",
      "ALTER TABLE source_channels ADD COLUMN invite_link VARCHAR(255)"),
+    ("destination_channels", "sign_source",
+     "ALTER TABLE destination_channels ADD COLUMN sign_source BOOLEAN NOT NULL DEFAULT FALSE",
+     # «Парсер Урал»: one feed merged from ~720 channels across the region.
+     "UPDATE destination_channels SET sign_source = TRUE WHERE telegram_id = -1004455437967"),
 ]
 
 _COLUMN_EXISTS_SQL = text(
@@ -72,7 +79,7 @@ async def _run_column_migrations() -> None:
     rather than raised: the next boot retries it, whereas letting it escape
     kills the process before the management bot ever starts.
     """
-    for table, column, ddl in _COLUMN_MIGRATIONS:
+    for table, column, ddl, *backfill in _COLUMN_MIGRATIONS:
         try:
             async with engine.begin() as conn:
                 already = await conn.execute(
@@ -83,6 +90,8 @@ async def _run_column_migrations() -> None:
                 # Fail fast instead of queueing behind a long-running reader.
                 await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
                 await conn.execute(text(ddl))
+                for statement in backfill:
+                    await conn.execute(text(statement))
                 log.info("column_migration_applied", table=table, column=column)
         except Exception as exc:
             log.warning(

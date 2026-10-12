@@ -279,3 +279,29 @@ async def cmd_remove_dest(message: Message) -> None:
             await message.answer("ℹ️ Такое назначение не найдено в базе.")
     except Exception as exc:
         await message.answer(f"❌ Ошибка: {exc}")
+
+
+@router.message(Command("signsource"))
+async def cmd_sign_source(message: Message) -> None:
+    """Toggle the source-channel signature under every post in a destination.
+    Usage: /signsource <ID назначения>"""
+    parts = message.text.split() if message.text else []
+    if len(parts) < 2 or not parts[1].lstrip("-").isdigit():
+        await message.answer(
+            "Использование: <code>/signsource ID_назначения</code>\n"
+            "Включает/выключает подпись канала-источника под каждым постом.",
+            parse_mode="HTML",
+        )
+        return
+
+    async with async_session_factory() as session:
+        repo = ChannelRepository(session)
+        dest = await repo.get_destination_by_telegram_id(int(parts[1]))
+        if dest is None:
+            await message.answer("ℹ️ Такое назначение не найдено в базе. ID — в /listdests.")
+            return
+        dest.sign_source = not dest.sign_source
+        await session.commit()
+
+    state = "включена ✅" if dest.sign_source else "выключена"
+    await message.answer(f"Подпись источника в «{dest.title}»: {state}")

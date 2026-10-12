@@ -46,6 +46,8 @@ def _get_bot() -> Bot:
 
 
 CAPTION_LIMIT = 1024  # Telegram's max caption length for photo/video/document
+TEXT_LIMIT = 4096  # Telegram's max length for a plain text message
+SIGNATURE_MAX = 100  # longest source title worth putting under a post
 
 
 def _truncate_caption(text: Optional[str]) -> Optional[str]:
@@ -76,6 +78,42 @@ def _clip_entities(
     limit = _utf16_len(text)
     kept = [e for e in entities if e.offset + e.length <= limit]
     return kept or None
+
+
+def source_link(source) -> Optional[str]:
+    """Public link to a source channel, or its stored invite, or nothing."""
+    if getattr(source, "username", None):
+        return f"https://t.me/{source.username}"
+    return getattr(source, "invite_link", None) or None
+
+
+def with_source_signature(
+    text: Optional[str],
+    entities: Optional[List[AiogramMessageEntity]],
+    title: str,
+    url: Optional[str],
+    limit: int,
+) -> tuple[str, List[AiogramMessageEntity]]:
+    """Append the source channel's name as the post's last paragraph, bold
+    and linked to the channel.
+
+    The body is shortened to make room rather than the signature: the send
+    path cuts anything over Telegram's limit from the end, which is exactly
+    where the signature sits.
+    """
+    text = text or ""
+    signature = " ".join(title.split())[:SIGNATURE_MAX] or "Источник"
+    separator = "\n\n" if text else ""
+    room = limit - len(separator) - len(signature)
+    if len(text) > room:
+        text = text[:max(room - 1, 0)].rstrip() + "…"
+    kept = _clip_entities(entities, text) or []
+    offset = _utf16_len(text + separator)
+    length = _utf16_len(signature)
+    signed = list(kept) + [AiogramMessageEntity(type="bold", offset=offset, length=length)]
+    if url:
+        signed.append(AiogramMessageEntity(type="text_link", offset=offset, length=length, url=url))
+    return text + separator + signature, signed
 
 
 # Telethon entity class name -> Bot API entity type. Types needing extra
@@ -297,14 +335,20 @@ async def send_album(
     dest_channel_id: int,
     override_caption: Optional[str] = None,
     reply_to_message_id: Optional[int] = None,
+    caption_entities: Optional[List[AiogramMessageEntity]] = None,
 ) -> List[int]:
     """Copy a media group (album) to dest via Bot API send_media_group.
     Falls back to sending without the reply link if the replied-to message
-    is gone (deleted/invalid) so a stale thread link never blocks the album."""
-    result = await _send_album_impl(client, messages, dest_channel_id, override_caption, reply_to_message_id)
+    is gone (deleted/invalid) so a stale thread link never blocks the album.
+    `caption_entities` format override_caption and must fit it as given."""
+    result = await _send_album_impl(
+        client, messages, dest_channel_id, override_caption, reply_to_message_id, caption_entities,
+    )
     if not result and reply_to_message_id is not None:
         log.warning("send_album_reply_fallback", dest=dest_channel_id)
-        result = await _send_album_impl(client, messages, dest_channel_id, override_caption, None)
+        result = await _send_album_impl(
+            client, messages, dest_channel_id, override_caption, None, caption_entities,
+        )
     return result
 
 
@@ -314,6 +358,7 @@ async def _send_album_impl(
     dest_channel_id: int,
     override_caption: Optional[str],
     reply_to_message_id: Optional[int],
+    caption_entities: Optional[List[AiogramMessageEntity]] = None,
 ) -> List[int]:
     if not messages:
         return []
@@ -329,8 +374,10 @@ async def _send_album_impl(
         caption_used = False
 
         for msg in messages:
+            cap_entities = None
             if not caption_used and override_caption is not None:
                 cap = _truncate_caption(override_caption) if override_caption else None
+                cap_entities = _clip_entities(caption_entities, cap)
                 caption_used = True
             else:
                 text = msg.message or ""
@@ -347,6 +394,7 @@ async def _send_album_impl(
                 media_items.append(InputMediaPhoto(
                     media=BufferedInputFile(data, "photo.jpg"),
                     caption=cap,
+                    caption_entities=cap_entities,
                 ))
             elif isinstance(media, MessageMediaDocument):
                 doc = media.document
@@ -358,11 +406,13 @@ async def _send_album_impl(
                     media_items.append(InputMediaVideo(
                         media=BufferedInputFile(data, filename or "video.mp4"),
                         caption=cap,
+                        caption_entities=cap_entities,
                     ))
                 else:
                     media_items.append(InputMediaPhoto(
                         media=BufferedInputFile(data, filename or "file"),
                         caption=cap,
+                        caption_entities=cap_entities,
                     ))
 
         if not media_items:

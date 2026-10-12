@@ -37,6 +37,10 @@ class DestinationChannel(Base):
     username: Mapped[str | None] = mapped_column(String(255), nullable=True)
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # End every post with the source channel's name, bold and linked to it.
+    # For destinations that merge many sources into one feed, where readers
+    # can't otherwise tell whose post they're reading.
+    sign_source: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     added_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, nullable=False
     )

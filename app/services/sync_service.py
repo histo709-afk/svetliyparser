@@ -19,7 +19,16 @@ from app.database import async_session_factory
 from app.repositories.channel_repo import ChannelRepository
 from app.repositories.message_repo import MessageRepository
 from app.repositories.route_repo import RouteRepository
-from app.services.forwarder import convert_entities, convert_reply_markup, send_album, send_message
+from app.services.forwarder import (
+    CAPTION_LIMIT,
+    TEXT_LIMIT,
+    convert_entities,
+    convert_reply_markup,
+    send_album,
+    send_message,
+    source_link,
+    with_source_signature,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -534,6 +543,12 @@ async def _flush_album(
                 caption, _unused_entities = await _apply_replacements(caption, route.id)
                 if getattr(route, "strip_footer", False):
                     caption = _strip_footer(caption)
+                caption_entities = None
+                if getattr(dest, "sign_source", False):
+                    caption, caption_entities = with_source_signature(
+                        caption, None, source.title or str(source_channel_id),
+                        source_link(source), CAPTION_LIMIT,
+                    )
                 reply_to = await _resolve_reply_to(
                     msg_repo, source_channel_id,
                     getattr(getattr(messages[0], "reply_to", None), "reply_to_msg_id", None),
@@ -543,6 +558,7 @@ async def _flush_album(
                     telethon_client, messages, dest.telegram_id,
                     override_caption=caption,
                     reply_to_message_id=reply_to,
+                    caption_entities=caption_entities,
                 )
                 if not dest_ids:
                     err = f"Album forward failed: src={source_channel_id} group={grouped_id} dest={dest.telegram_id}"
@@ -640,6 +656,12 @@ async def _process_single_message(
                     kept_entities = _remap_entities_after_edit(kept_entities, before_strip, add_surrogate(stripped))
                     msg_text = stripped
                 entities = convert_entities(kept_entities, len(add_surrogate(msg_text))) if kept_entities else None
+                if getattr(dest, "sign_source", False):
+                    limit = TEXT_LIMIT if getattr(message, "media", None) is None else CAPTION_LIMIT
+                    msg_text, entities = with_source_signature(
+                        msg_text, entities, source.title or str(source_channel_id),
+                        source_link(source), limit,
+                    )
                 reply_to = await _resolve_reply_to(
                     msg_repo, source_channel_id,
                     getattr(getattr(message, "reply_to", None), "reply_to_msg_id", None),
@@ -995,6 +1017,12 @@ async def _process_album_poll(
                 first_text, _unused_entities = await _apply_replacements(first_text, route.id)
                 if getattr(route, "strip_footer", False):
                     first_text = _strip_footer(first_text)
+                caption_entities = None
+                if getattr(dest, "sign_source", False):
+                    first_text, caption_entities = with_source_signature(
+                        first_text, None, source.title or str(source_channel_id),
+                        source_link(source), CAPTION_LIMIT,
+                    )
                 reply_to = await _resolve_reply_to(
                     msg_repo, source_channel_id,
                     getattr(getattr(messages[0], "reply_to", None), "reply_to_msg_id", None),
@@ -1002,7 +1030,7 @@ async def _process_album_poll(
                 )
                 dest_ids = await send_album(
                     client, messages, dest.telegram_id, override_caption=first_text,
-                    reply_to_message_id=reply_to,
+                    reply_to_message_id=reply_to, caption_entities=caption_entities,
                 )
                 if not dest_ids:
                     log.error("poll_album_failed", src=source_channel_id, dest=dest.telegram_id)
